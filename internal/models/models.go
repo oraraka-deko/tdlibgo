@@ -70,7 +70,18 @@ type Chat struct {
 	LastMessageDate  time.Time `json:"last_message_date"`
 	PhotoURL         string    `json:"photo_url,omitempty"`
 	IsOnline         bool      `json:"is_online,omitempty"`
+	StatusText       string    `json:"status_text,omitempty"`
+	IsMuted          bool      `json:"is_muted,omitempty"`
+	EmojiStatus      string    `json:"emoji_status,omitempty"`
+	TopMessageMedia  string    `json:"top_message_media,omitempty"`
+	TopMessageOut    bool      `json:"top_message_out,omitempty"`
+	TopMessageRead   bool      `json:"top_message_read,omitempty"`
 	TypingUser       string    `json:"typing_user,omitempty"`
+	MembersCount     int       `json:"members_count,omitempty"`
+	IsVerified       bool      `json:"is_verified,omitempty"`
+	NoForwards       bool      `json:"noforwards,omitempty"`
+	PhotoID          int64     `json:"-"`
+	StrippedThumb    string    `json:"stripped_thumb,omitempty"`
 	AccessHash       int64     `json:"-"`
 }
 
@@ -124,10 +135,50 @@ type Message struct {
 	ForwardFrom   string        `json:"forward_from,omitempty"`
 	ForwardDate   time.Time     `json:"forward_date,omitempty"`
 	ForwardPostID int           `json:"forward_post_id,omitempty"`
-	Media         *MessageMedia `json:"media,omitempty"`
-	EditDate      time.Time     `json:"edit_date,omitempty"`
-	Status        string        `json:"status"` // "sending", "sent", "read"
-	IsService     bool          `json:"is_service,omitempty"`
+	Media         *MessageMedia   `json:"media,omitempty"`
+	Reactions     []ReactionCount `json:"reactions,omitempty"`
+	EditDate      time.Time       `json:"edit_date,omitempty"`
+	Views         int             `json:"views,omitempty"`
+	Forwards      int             `json:"forwards,omitempty"`
+	NoForwards    bool            `json:"noforwards,omitempty"`
+	Status        string          `json:"status"` // "sending", "sent", "read"
+	IsService     bool            `json:"is_service,omitempty"`
+}
+
+// ReactionCount describes message reaction emoji and count.
+type ReactionCount struct {
+	Reaction string `json:"reaction"`
+	Count    int    `json:"count"`
+	Chosen   bool   `json:"chosen"`
+}
+
+// BotCommandItem represents a bot slash command.
+type BotCommandItem struct {
+	Command     string `json:"command"`
+	Description string `json:"description"`
+}
+
+// BotMenuButtonItem represents bot custom menu button.
+type BotMenuButtonItem struct {
+	Text string `json:"text,omitempty"`
+	URL  string `json:"url,omitempty"`
+	Type string `json:"type"` // "commands", "web_app", "default"
+}
+
+// UserFullDetails represents complete user or bot profile details.
+type UserFullDetails struct {
+	ID                int64              `json:"id"`
+	About             string             `json:"about,omitempty"`
+	Birthday          string             `json:"birthday,omitempty"`
+	PersonalChannelID int64              `json:"personal_channel_id,omitempty"`
+	StarGiftsCount    int                `json:"stargifts_count,omitempty"`
+	BusinessAddress   string             `json:"business_address,omitempty"`
+	BusinessHours     string             `json:"business_hours,omitempty"`
+	BotDescription    string             `json:"bot_description,omitempty"`
+	BotCommands       []BotCommandItem   `json:"bot_commands,omitempty"`
+	BotMenuButton     *BotMenuButtonItem `json:"bot_menu_button,omitempty"`
+	CommonChatsCount  int                `json:"common_chats_count,omitempty"`
+	PinnedMsgID       int                `json:"pinned_msg_id,omitempty"`
 }
 
 // PostSearchResult represents a global public channel post search hit (Telegram Premium feature).
@@ -166,4 +217,11 @@ type EntityInfo struct {
 	Username   string
 	Phone      string
 	PhotoURL   string
+	StatusText   string
+	IsOnline     bool
+	MembersCount  int
+	IsVerified    bool
+	NoForwards    bool
+	PhotoID       int64
+	StrippedThumb string
 }

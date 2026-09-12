@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/coder/websocket"
@@ -21,11 +22,12 @@ import (
 
 // Server hosts HTTP REST endpoints, WebSocket connections, and serves the Web UI.
 type Server struct {
-	port   int
-	state  *state.StateManager
-	client *telegram.ClientController
-	srv    *http.Server
-	webFS  embed.FS
+	port         int
+	state        *state.StateManager
+	client       *telegram.ClientController
+	srv          *http.Server
+	webFS        embed.FS
+	historyCache sync.Map
 }
 
 // NewServer initializes a new Server.
@@ -52,9 +54,17 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/messages", s.handleMessages)
 	mux.HandleFunc("/api/messages/send", s.handleSendMessage)
 	mux.HandleFunc("/api/chats/read", s.handleReadChat)
+	mux.HandleFunc("/api/messages/react", s.handleReactMessage)
+	mux.HandleFunc("/api/reactions/available", s.handleAvailableReactions)
+	mux.HandleFunc("/api/user/full", s.handleUserFull)
+	mux.HandleFunc("/api/bot/menu", s.handleBotMenu)
 
 	// Media Streaming & Download Endpoint
 	mux.HandleFunc("/api/media", s.handleMedia)
+	mux.HandleFunc("/api/avatar", s.handleAvatar)
+
+	// Forward Messages Endpoint
+	mux.HandleFunc("/api/messages/forward", s.handleForwardMessages)
 
 	// Telegram Premium Global Post Search Endpoint
 	mux.HandleFunc("/api/search/posts", s.handleSearchGlobalPosts)
@@ -218,6 +228,16 @@ func (s *Server) handleChats(w http.ResponseWriter, r *http.Request) {
 
 // handleMessages returns messages for a chat with lazy loading.
 func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			fmt.Printf("[SERVER] Recovered from panic in handleMessages: %v\n", rec)
+			s.writeJSON(w, http.StatusOK, map[string]interface{}{
+				"messages": []*models.Message{},
+				"count":    0,
+			})
+		}
+	}()
+
 	if r.Method != http.MethodGet {
 		s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -255,13 +275,23 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Fetch from Telegram if chat only has preview message (<= 1) or older messages requested
-	if (len(messages) <= 1 || (offsetID > 0 && len(messages) < limit)) && s.state.GetAuthState().IsLoggedIn {
-		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-		defer cancel()
-		if err := s.client.FetchHistory(ctx, normChatID, limit, offsetID); err != nil {
-			fmt.Printf("[SERVER] FetchHistory error for chat %d: %v\n", normChatID, err)
+	shouldFetch := (len(messages) <= 1 || (offsetID > 0 && len(messages) < limit)) && s.state.GetAuthState().IsLoggedIn
+	if shouldFetch {
+		cacheKey := fmt.Sprintf("%d:%d", normChatID, offsetID)
+		if lastTime, exists := s.historyCache.Load(cacheKey); exists {
+			if time.Since(lastTime.(time.Time)) < 30*time.Second {
+				shouldFetch = false
+			}
 		}
-		messages = s.state.GetMessages(normChatID, limit, offsetID)
+		if shouldFetch {
+			s.historyCache.Store(cacheKey, time.Now())
+			ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
+			defer cancel()
+			if err := s.client.FetchHistory(ctx, normChatID, limit, offsetID); err != nil {
+				fmt.Printf("[SERVER] FetchHistory error for chat %d: %v\n", normChatID, err)
+			}
+			messages = s.state.GetMessages(normChatID, limit, offsetID)
+		}
 	}
 
 	s.writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -557,6 +587,203 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				_ = s.client.MarkAsRead(readCtx, p.ChatID, p.MaxID)
 				rCancel()
 			}
+
+		case "react_message":
+			var p struct {
+				ChatID   int64  `json:"chat_id"`
+				MsgID    int    `json:"message_id"`
+				Reaction string `json:"reaction"`
+			}
+			if err := json.Unmarshal(cmd.Payload, &p); err == nil && p.ChatID != 0 && p.MsgID != 0 {
+				reactCtx, rCancel := context.WithTimeout(ctx, 10*time.Second)
+				_ = s.client.SendReaction(reactCtx, p.ChatID, p.MsgID, p.Reaction)
+				rCancel()
+			}
 		}
 	}
+}
+
+// handleReactMessage sends or removes a message reaction.
+func (s *Server) handleReactMessage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	var req struct {
+		ChatID   int64  `json:"chat_id"`
+		MsgID    int    `json:"message_id"`
+		Reaction string `json:"reaction"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ChatID == 0 || req.MsgID == 0 {
+		s.writeError(w, http.StatusBadRequest, "invalid request parameters")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	if err := s.client.SendReaction(ctx, req.ChatID, req.MsgID, req.Reaction); err != nil {
+		s.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	s.writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status": "ok",
+	})
+}
+
+// handleAvailableReactions returns default and available emoji reactions.
+func (s *Server) handleAvailableReactions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	reactions, err := s.client.GetAvailableReactions(ctx)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	s.writeJSON(w, http.StatusOK, map[string]interface{}{
+		"reactions": reactions,
+	})
+}
+
+// handleUserFull returns extended user/bot profile info.
+func (s *Server) handleUserFull(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	uStr := r.URL.Query().Get("user_id")
+	userID, err := strconv.ParseInt(uStr, 10, 64)
+	if err != nil || userID == 0 {
+		s.writeError(w, http.StatusBadRequest, "invalid user_id")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	details, err := s.client.GetFullUser(ctx, userID)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	s.writeJSON(w, http.StatusOK, map[string]interface{}{
+		"details": details,
+	})
+}
+
+// handleBotMenu returns the bot menu button for a chat.
+func (s *Server) handleBotMenu(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	cStr := r.URL.Query().Get("chat_id")
+	chatID, err := strconv.ParseInt(cStr, 10, 64)
+	if err != nil || chatID == 0 {
+		s.writeError(w, http.StatusBadRequest, "invalid chat_id")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	btn, err := s.client.GetBotMenuButton(ctx, chatID)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	s.writeJSON(w, http.StatusOK, map[string]interface{}{
+		"menu_button": btn,
+	})
+}
+
+// handleAvatar returns full-resolution profile photo for a user, group, or channel.
+func (s *Server) handleAvatar(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	pStr := r.URL.Query().Get("peer_id")
+	peerID, err := strconv.ParseInt(pStr, 10, 64)
+	if err != nil || peerID == 0 {
+		s.writeError(w, http.StatusBadRequest, "invalid peer_id")
+		return
+	}
+
+	big := r.URL.Query().Get("size") == "big" || r.URL.Query().Get("big") == "1"
+
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
+	data, err := s.client.DownloadAvatar(ctx, peerID, big)
+	if err != nil || len(data) == 0 {
+		s.writeError(w, http.StatusNotFound, "avatar not found")
+		return
+	}
+
+	w.Header().Set("Content-Type", "image/jpeg")
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	_, _ = w.Write(data)
+}
+
+// handleForwardMessages forwards messages to another chat or saved messages.
+func (s *Server) handleForwardMessages(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	var req struct {
+		FromChatID int64 `json:"from_chat_id"`
+		ToChatID   int64 `json:"to_chat_id"`
+		MessageIDs []int `json:"message_ids"`
+		MessageID  int   `json:"message_id"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	ids := req.MessageIDs
+	if len(ids) == 0 && req.MessageID != 0 {
+		ids = []int{req.MessageID}
+	}
+	if req.FromChatID == 0 || req.ToChatID == 0 || len(ids) == 0 {
+		s.writeError(w, http.StatusBadRequest, "from_chat_id, to_chat_id, and message_ids are required")
+		return
+	}
+
+	// Verify content protection (noforwards)
+	if chat, ok := s.state.GetChat(req.FromChatID); ok && chat.NoForwards {
+		s.writeError(w, http.StatusForbidden, "forwarding is restricted for this chat")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
+	if err := s.client.ForwardMessages(ctx, req.FromChatID, req.ToChatID, ids); err != nil {
+		s.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	s.writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status": "ok",
+		"count":  len(ids),
+	})
 }

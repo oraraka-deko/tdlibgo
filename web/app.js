@@ -49,6 +49,7 @@
 
     // Side Drawer
     btnMainMenu: document.getElementById('btn-main-menu'),
+    btnSavedMessages: document.getElementById('btn-saved-messages'),
     menuDrawer: document.getElementById('menu-drawer'),
     menuDrawerBackdrop: document.getElementById('menu-drawer-backdrop'),
     drawerUserName: document.getElementById('drawer-user-name'),
@@ -65,6 +66,10 @@
     headerTitle: document.getElementById('header-title'),
     headerSubtitle: document.getElementById('header-subtitle'),
     btnChatBack: document.getElementById('btn-chat-back'),
+    pinnedBar: document.getElementById('pinned-bar'),
+    pinnedTitle: document.getElementById('pinned-title'),
+    pinnedSnippet: document.getElementById('pinned-snippet'),
+    btnClosePin: document.getElementById('btn-close-pin'),
     messageStream: document.getElementById('message-stream'),
     btnScrollBottom: document.getElementById('btn-scroll-bottom'),
     messageInput: document.getElementById('message-input'),
@@ -89,6 +94,9 @@
     lightboxMediaWrapper: document.getElementById('lightbox-media-wrapper'),
     lightboxDownloadLink: document.getElementById('lightbox-download-link'),
 
+    btnBotMenu: document.getElementById('btn-bot-menu'),
+    botCommandsPopup: document.getElementById('bot-commands-popup'),
+
     // Right Info Drawer
     btnInfoDrawer: document.getElementById('btn-info-drawer'),
     infoDrawer: document.getElementById('info-drawer'),
@@ -100,6 +108,23 @@
     infoPhoneRow: document.getElementById('info-phone-row'),
     infoUsername: document.getElementById('info-username'),
     infoUsernameRow: document.getElementById('info-username-row'),
+    infoBioRow: document.getElementById('info-bio-row'),
+    infoBio: document.getElementById('info-bio'),
+    infoBirthdayRow: document.getElementById('info-birthday-row'),
+    infoBirthday: document.getElementById('info-birthday'),
+    infoBusinessRow: document.getElementById('info-business-row'),
+    infoBusiness: document.getElementById('info-business'),
+    infoBotRow: document.getElementById('info-bot-row'),
+    infoBotDesc: document.getElementById('info-bot-desc'),
+    infoBotCommands: document.getElementById('info-bot-commands'),
+
+    // Forward Modal & Toast Notification
+    forwardModalBackdrop: document.getElementById('forward-modal-backdrop'),
+    forwardModal: document.getElementById('forward-modal'),
+    btnCloseForward: document.getElementById('btn-close-forward'),
+    forwardSearch: document.getElementById('forward-search'),
+    forwardChatList: document.getElementById('forward-chat-list'),
+    toastNotification: document.getElementById('toast-notification'),
   };
 
   // Helper Functions
@@ -116,6 +141,20 @@
     const abs = Math.abs(id || 0);
     return 'avatar-color-' + (abs % 7);
   }
+
+  // Avatar Lazy Loading via IntersectionObserver
+  const avatarObserver = new IntersectionObserver((entries, obs) => {
+    entries.forEach((entry) => {
+      if (entry.isIntersecting) {
+        const img = entry.target;
+        if (img.dataset.src) {
+          img.src = img.dataset.src;
+          delete img.dataset.src;
+        }
+        obs.unobserve(img);
+      }
+    });
+  }, { rootMargin: '120px' });
 
   function formatTime(dateStr) {
     if (!dateStr) return '';
@@ -152,6 +191,28 @@
     const m = Math.floor(sec / 60);
     const s = Math.floor(sec % 60);
     return `${m}:${s < 10 ? '0' : ''}${s}`;
+  }
+
+  function formatViews(count) {
+    if (!count || count <= 0) return '';
+    if (count >= 1000000) {
+      return (count / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
+    }
+    if (count >= 1000) {
+      return (count / 1000).toFixed(1).replace(/\.0$/, '') + 'K';
+    }
+    return count.toString();
+  }
+
+  function formatSubscribers(count) {
+    if (!count || count <= 0) return '';
+    if (count >= 1000000) {
+      return (count / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
+    }
+    if (count >= 1000) {
+      return (count / 1000).toFixed(1).replace(/\.0$/, '') + 'K';
+    }
+    return count.toLocaleString();
   }
 
   function isArchive(fileName, mimeType) {
@@ -205,6 +266,136 @@
     el.lightboxMediaWrapper.innerHTML = '';
     el.mediaLightbox.classList.add('hidden');
   }
+
+  // Toast Notifications
+  let toastTimer = null;
+  function showToast(text, duration = 3000) {
+    if (!el.toastNotification) return;
+    el.toastNotification.textContent = text;
+    el.toastNotification.classList.remove('hidden');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => {
+      el.toastNotification.classList.add('hidden');
+    }, duration);
+  }
+
+  // Forward Modal Handling
+  function openForwardModal(msg) {
+    state.forwardingMsg = msg;
+    if (el.forwardSearch) el.forwardSearch.value = '';
+    renderForwardChatList('');
+    if (el.forwardModalBackdrop) el.forwardModalBackdrop.classList.remove('hidden');
+    if (el.forwardModal) el.forwardModal.classList.remove('hidden');
+    if (el.forwardSearch) el.forwardSearch.focus();
+  }
+
+  function closeForwardModal() {
+    state.forwardingMsg = null;
+    if (el.forwardModalBackdrop) el.forwardModalBackdrop.classList.add('hidden');
+    if (el.forwardModal) el.forwardModal.classList.add('hidden');
+  }
+
+  function renderForwardChatList(filterQuery) {
+    if (!el.forwardChatList) return;
+    el.forwardChatList.innerHTML = '';
+    const q = (filterQuery || '').toLowerCase().trim();
+
+    // 1. Saved Messages option at the top
+    const myId = state.user ? state.user.id : 0;
+    if (!q || 'saved messages'.includes(q)) {
+      const savedItem = document.createElement('div');
+      savedItem.className = 'forward-chat-item';
+      savedItem.innerHTML = `
+        <div class="avatar avatar-saved-messages" style="width:40px;height:40px;">
+          <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M17 3H7c-1.1 0-1.99.9-1.99 2L5 21l7-3 7 3V5c0-1.1-.9-2-2-2z"/></svg>
+        </div>
+        <div class="forward-chat-info">
+          <div class="forward-chat-title">Saved Messages</div>
+          <div class="forward-chat-desc">Forward to yourself</div>
+        </div>
+      `;
+      savedItem.addEventListener('click', () => {
+        executeForward(myId, 'Saved Messages');
+      });
+      el.forwardChatList.appendChild(savedItem);
+    }
+
+    // 2. All chats
+    const filtered = (state.chats || []).filter((c) => {
+      if (c.id === myId || c.title === 'Saved Messages') return false;
+      if (q && !c.title.toLowerCase().includes(q) && !(c.username && c.username.toLowerCase().includes(q))) {
+        return false;
+      }
+      return true;
+    });
+
+    filtered.forEach((chat) => {
+      const item = document.createElement('div');
+      item.className = 'forward-chat-item';
+      const colorClass = getAvatarColorClass(chat.id);
+      const initials = getInitials(chat.title);
+      const avatarContent = chat.photo_url
+        ? `<img data-src="${chat.photo_url}" class="avatar-img lazy-avatar" alt="" onerror="this.remove();" /><span class="avatar-initials">${initials}</span>`
+        : `<span class="avatar-initials">${initials}</span>`;
+
+      let subText = chat.type;
+      if (chat.type === 'channel') subText = 'Channel';
+      else if (chat.type === 'group') subText = 'Group';
+      else if (chat.type === 'bot') subText = 'Bot';
+      else subText = chat.username ? `@${chat.username}` : 'Private chat';
+
+      item.innerHTML = `
+        <div class="avatar ${colorClass}" style="width:40px;height:40px;font-size:14px;">
+          ${avatarContent}
+        </div>
+        <div class="forward-chat-info">
+          <div class="forward-chat-title">${escapeHTML(chat.title)}</div>
+          <div class="forward-chat-desc">${escapeHTML(subText)}</div>
+        </div>
+      `;
+      item.addEventListener('click', () => {
+        executeForward(chat.id, chat.title);
+      });
+      el.forwardChatList.appendChild(item);
+
+      const lazyImg = item.querySelector('.lazy-avatar');
+      if (lazyImg) {
+        avatarObserver.observe(lazyImg);
+      }
+    });
+  }
+
+  async function executeForward(targetChatId, targetTitle) {
+    if (!state.forwardingMsg) return;
+    const msg = state.forwardingMsg;
+    closeForwardModal();
+
+    try {
+      const res = await fetch('/api/messages/forward', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          from_chat_id: msg.chat_id,
+          to_chat_id: targetChatId,
+          message_ids: [msg.id],
+        }),
+      });
+
+      const data = await res.json();
+      if (res.ok && data.status === 'ok') {
+        showToast(`Forwarded to ${targetTitle}`);
+        if (state.selectedChatId === targetChatId) {
+          fetchMessages(targetChatId, false);
+        }
+      } else {
+        alert(data.error || 'Failed to forward message');
+      }
+    } catch (e) {
+      console.error('Failed to forward message', e);
+      alert('Could not forward message: network error');
+    }
+  }
+
 
   // Emoji Categories Data
   const EMOJI_CATEGORIES = {
@@ -337,6 +528,24 @@
       case 'user_status':
         handleUserStatus(msg.payload);
         break;
+
+      case 'message_reactions':
+        handleMessageReactions(msg.payload);
+        break;
+    }
+  }
+
+  function handleMessageReactions(payload) {
+    const { chat_id, message_id, reactions } = payload;
+    const list = state.messages[chat_id];
+    if (list) {
+      const target = list.find((m) => m.id === message_id);
+      if (target) {
+        target.reactions = reactions;
+        if (chat_id === state.selectedChatId) {
+          renderMessages(chat_id);
+        }
+      }
     }
   }
 
@@ -405,8 +614,9 @@
     el.drawerUserName.textContent = name;
     el.drawerUserPhone.textContent = state.user.phone || '';
 
-    if (state.user.photo_url) {
-      el.drawerUserAvatar.innerHTML = `<img src="${state.user.photo_url}" alt="Profile" class="avatar-img" />`;
+    const photoUrl = state.user.photo_url || (state.user.id ? `/api/avatar?peer_id=${state.user.id}` : '');
+    if (photoUrl) {
+      el.drawerUserAvatar.innerHTML = `<img src="${photoUrl}" alt="Profile" class="avatar-img" onerror="this.style.display='none'; this.parentElement.textContent='${getInitials(name)}';" />`;
     } else {
       el.drawerUserAvatar.textContent = getInitials(name);
     }
@@ -452,8 +662,16 @@
     if (state.loadingOlder || state.hasMoreOlder[chatId] === false) return;
 
     const list = state.messages[chatId] || [];
+    if (list.length < 15) {
+      state.hasMoreOlder[chatId] = false;
+      return;
+    }
+
     const oldest = list.find((m) => !m.pending && m.id > 0);
-    if (!oldest) return;
+    if (!oldest) {
+      state.hasMoreOlder[chatId] = false;
+      return;
+    }
 
     state.loadingOlder = true;
 
@@ -470,10 +688,14 @@
 
     try {
       const res = await fetch(`/api/messages?chat_id=${chatId}&limit=40&offset_id=${oldest.id}`);
+      if (!res.ok) {
+        state.hasMoreOlder[chatId] = false;
+        return;
+      }
       const data = await res.json();
       const olderMessages = data.messages || [];
 
-      if (olderMessages.length < 40) {
+      if (olderMessages.length < 30) {
         state.hasMoreOlder[chatId] = false;
       }
 
@@ -688,11 +910,87 @@
 
       const colorClass = getAvatarColorClass(chat.id);
       const initials = getInitials(chat.title);
-      const timeStr = formatTime(chat.last_message_date);
-
       const avatarContent = chat.photo_url
-        ? `<img src="${chat.photo_url}" alt="${escapeHTML(chat.title)}" class="avatar-img" />`
-        : initials;
+        ? `<img data-src="${chat.photo_url}" class="avatar-img lazy-avatar" alt="" onerror="this.remove();" /><span class="avatar-initials">${initials}</span>`
+        : `<span class="avatar-initials">${initials}</span>`;
+
+      // Time & Read receipt
+      const timeStr = formatTime(chat.last_message_date);
+      let tickHtml = '';
+      if (chat.top_message_out) {
+        if (chat.top_message_read) {
+          tickHtml = `<svg class="chat-tick-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="18 6 7 17 2 12"></polyline><polyline points="22 10 13 19 11 17"></polyline></svg>`;
+        } else {
+          tickHtml = `<svg class="chat-tick-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"></polyline></svg>`;
+        }
+      }
+
+      // Title icons (Muted, Emoji status)
+      const muteIconHtml = chat.is_muted
+        ? `<svg class="chat-mute-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27l4.73 4.73H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/></svg>`
+        : '';
+      const emojiStatusHtml = chat.emoji_status
+        ? `<span class="chat-emoji-status">${escapeHTML(chat.emoji_status)}</span>`
+        : '';
+
+      // Preview content
+      let previewHtml = '';
+      if (chat.typing_user) {
+        previewHtml = `<em style="color:var(--accent)">${escapeHTML(chat.typing_user)} is typing...</em>`;
+      } else {
+        let senderPrefix = '';
+        if (chat.top_message_out) {
+          senderPrefix = '<span class="chat-sender">You: </span>';
+        } else if (chat.type === 'group' && chat.top_message_sender) {
+          senderPrefix = `<span class="chat-sender">${escapeHTML(chat.top_message_sender)}: </span>`;
+        }
+
+        let mediaIcon = '';
+        if (chat.top_message_media) {
+          switch (chat.top_message_media) {
+            case 'photo':
+              mediaIcon = '<span class="chat-media-icon">📷 </span>';
+              break;
+            case 'video':
+              mediaIcon = '<span class="chat-media-icon">📹 </span>';
+              break;
+            case 'sticker':
+              mediaIcon = '<span class="chat-media-icon">🖼️ </span>';
+              break;
+            case 'document':
+              mediaIcon = '<span class="chat-media-icon">📁 </span>';
+              break;
+            case 'audio':
+              mediaIcon = '<span class="chat-media-icon">🎵 </span>';
+              break;
+            case 'voice':
+              mediaIcon = '<span class="chat-media-icon">🎤 </span>';
+              break;
+            case 'poll':
+              mediaIcon = '<span class="chat-media-icon">📊 </span>';
+              break;
+          }
+        }
+
+        let textBody = '';
+        if (chat.top_message_text) {
+          textBody = escapeHTML(chat.top_message_text);
+        } else if (chat.type === 'user' && chat.status_text) {
+          textBody = `<span class="chat-user-status">${escapeHTML(chat.status_text)}</span>`;
+        }
+
+        previewHtml = senderPrefix + mediaIcon + textBody;
+      }
+
+      // Badges (Unread or Pin)
+      let badgeColHtml = '';
+      if (chat.unread_count > 0) {
+        const unreadText = chat.unread_count > 999 ? (chat.unread_count / 1000).toFixed(1) + 'K' : chat.unread_count;
+        const badgeClass = chat.is_muted ? 'chat-badge-unread muted' : 'chat-badge-unread';
+        badgeColHtml = `<span class="${badgeClass}">${unreadText}</span>`;
+      } else if (chat.pinned) {
+        badgeColHtml = `<span class="chat-pin-icon"><svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6h1.6v-6H18v-2l-2-2z"/></svg></span>`;
+      }
 
       item.innerHTML = `
         <div class="avatar-wrapper">
@@ -701,20 +999,30 @@
         </div>
         <div class="chat-content">
           <div class="chat-row-top">
-            <span class="chat-title">${escapeHTML(chat.title)}</span>
-            <span class="chat-time">${timeStr}</span>
+            <div class="chat-title-wrapper">
+              <span class="chat-title">${escapeHTML(chat.title)}</span>
+              ${emojiStatusHtml}
+              ${muteIconHtml}
+            </div>
+            <div class="chat-time-wrapper">
+              ${tickHtml}
+              <span class="chat-time">${timeStr}</span>
+            </div>
           </div>
           <div class="chat-row-bottom">
-            <span class="chat-preview">
-              ${chat.typing_user ? `<em style="color:var(--accent)">${escapeHTML(chat.typing_user)} is typing...</em>` : (chat.top_message_sender ? `<span class="chat-sender">${escapeHTML(chat.top_message_sender)}: </span>` : '') + escapeHTML(chat.top_message_text || '')}
-            </span>
-            ${chat.unread_count > 0 ? `<span class="chat-badge-unread">${chat.unread_count}</span>` : ''}
+            <span class="chat-preview">${previewHtml}</span>
+            <div class="chat-badge-col">${badgeColHtml}</div>
           </div>
         </div>
       `;
 
       item.addEventListener('click', () => selectChat(chat.id));
       el.chatList.appendChild(item);
+
+      const lazyImg = item.querySelector('.lazy-avatar');
+      if (lazyImg) {
+        avatarObserver.observe(lazyImg);
+      }
     });
   }
 
@@ -764,27 +1072,78 @@
   }
 
   function updateChatHeader(chat) {
-    el.headerTitle.textContent = chat.title;
-    el.headerAvatar.className = 'chat-header-avatar ' + getAvatarColorClass(chat.id);
-    el.infoAvatar.className = 'large-avatar ' + getAvatarColorClass(chat.id);
+    const isSavedMessages = chat.type === 'saved' || (state.user && chat.id === state.user.id) || chat.title === 'Saved Messages';
 
-    if (chat.photo_url) {
-      el.headerAvatar.innerHTML = `<img src="${chat.photo_url}" alt="${escapeHTML(chat.title)}" class="avatar-img" />`;
-      el.infoAvatar.innerHTML = `<img src="${chat.photo_url}" alt="${escapeHTML(chat.title)}" class="avatar-img" />`;
+    if (isSavedMessages) {
+      el.headerTitle.textContent = 'Saved Messages';
+      el.headerAvatar.className = 'chat-header-avatar avatar-saved-messages';
+      el.headerAvatar.innerHTML = `<svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M17 3H7c-1.1 0-1.99.9-1.99 2L5 21l7-3 7 3V5c0-1.1-.9-2-2-2z"/></svg>`;
+      el.infoAvatar.className = 'large-avatar avatar-saved-messages';
+      el.infoAvatar.innerHTML = `<svg viewBox="0 0 24 24" fill="currentColor" width="36" height="36"><path d="M17 3H7c-1.1 0-1.99.9-1.99 2L5 21l7-3 7 3V5c0-1.1-.9-2-2-2z"/></svg>`;
+      const count = (state.messages[chat.id] || []).length;
+      el.headerSubtitle.textContent = count > 0 ? `${count} messages` : 'Chat with yourself';
+      el.headerSubtitle.style.color = 'var(--text-secondary)';
     } else {
-      el.headerAvatar.textContent = getInitials(chat.title);
-      el.infoAvatar.textContent = getInitials(chat.title);
+      let verifiedHtml = '';
+      if (chat.is_verified) {
+        verifiedHtml = ` <span class="verified-badge" title="Verified">✓</span>`;
+      }
+      el.headerTitle.innerHTML = escapeHTML(chat.title) + verifiedHtml;
+      el.headerAvatar.className = 'chat-header-avatar ' + getAvatarColorClass(chat.id);
+      el.infoAvatar.className = 'large-avatar ' + getAvatarColorClass(chat.id);
+
+      const initials = getInitials(chat.title);
+      if (chat.photo_url) {
+        el.headerAvatar.innerHTML = `<img src="${chat.photo_url}" alt="${escapeHTML(chat.title)}" class="avatar-img" onerror="this.style.display='none'; this.parentElement.textContent='${initials}';" />`;
+        el.infoAvatar.innerHTML = `<img src="${chat.photo_url}&size=big" alt="${escapeHTML(chat.title)}" class="avatar-img" onerror="this.src='${chat.photo_url}'; this.onerror=()=>{this.style.display='none'; this.parentElement.textContent='${initials}';};" />`;
+      } else {
+        el.headerAvatar.textContent = initials;
+        el.infoAvatar.textContent = initials;
+      }
+
+      if (chat.typing_user) {
+        el.headerSubtitle.textContent = `${chat.typing_user} is typing...`;
+        el.headerSubtitle.style.color = 'var(--accent)';
+      } else if (chat.type === 'bot') {
+        el.headerSubtitle.textContent = 'bot';
+        el.headerSubtitle.style.color = 'var(--text-secondary)';
+      } else if (chat.type === 'channel') {
+        el.headerSubtitle.textContent = chat.members_count ? `${formatSubscribers(chat.members_count)} subscribers` : 'subscribers';
+        el.headerSubtitle.style.color = 'var(--text-secondary)';
+      } else if (chat.type === 'group') {
+        el.headerSubtitle.textContent = chat.members_count ? `${chat.members_count.toLocaleString()} members` : 'group';
+        el.headerSubtitle.style.color = 'var(--text-secondary)';
+      } else if (chat.is_online) {
+        el.headerSubtitle.textContent = 'online';
+        el.headerSubtitle.style.color = 'var(--online-green)';
+      } else {
+        el.headerSubtitle.textContent = chat.status_text || 'last seen recently';
+        el.headerSubtitle.style.color = 'var(--text-secondary)';
+      }
     }
 
-    if (chat.typing_user) {
-      el.headerSubtitle.textContent = `${chat.typing_user} is typing...`;
-      el.headerSubtitle.style.color = 'var(--accent)';
-    } else if (chat.is_online) {
-      el.headerSubtitle.textContent = 'online';
-      el.headerSubtitle.style.color = 'var(--online-green)';
-    } else {
-      el.headerSubtitle.textContent = chat.type === 'channel' ? 'channel' : (chat.type === 'group' ? 'group' : 'last seen recently');
-      el.headerSubtitle.style.color = 'var(--text-secondary)';
+    // Check for pinned message
+    const msgs = state.messages[chat.id] || [];
+    const pinned = msgs.slice().reverse().find((m) => m.pinned);
+    if (pinned && el.pinnedBar) {
+      el.pinnedTitle.textContent = 'Pinned Message';
+      let snippet = pinned.text || '';
+      if (!snippet && pinned.media) {
+        snippet = pinned.media.type === 'photo' ? 'Photo' : 'Media';
+      }
+      el.pinnedSnippet.textContent = snippet || 'Pinned message';
+      el.pinnedBar.classList.remove('hidden');
+      el.pinnedBar.onclick = () => {
+        const targetBubble = document.querySelector(`.message-bubble[data-id="${pinned.id}"]`);
+        if (targetBubble) {
+          targetBubble.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          targetBubble.classList.remove('highlight-pulse');
+          void targetBubble.offsetWidth;
+          targetBubble.classList.add('highlight-pulse');
+        }
+      };
+    } else if (el.pinnedBar) {
+      el.pinnedBar.classList.add('hidden');
     }
 
     // Populate Right Info Drawer
@@ -796,6 +1155,76 @@
       el.infoUsername.textContent = '@' + chat.username;
     } else {
       el.infoUsernameRow.classList.add('hidden');
+    }
+
+    if (!isSavedMessages) {
+      fetchExtendedProfile(chat.id, chat.type);
+    }
+  }
+
+  async function fetchExtendedProfile(chatId, chatType) {
+    if (el.infoBioRow) el.infoBioRow.classList.add('hidden');
+    if (el.infoBirthdayRow) el.infoBirthdayRow.classList.add('hidden');
+    if (el.infoBusinessRow) el.infoBusinessRow.classList.add('hidden');
+    if (el.infoBotRow) el.infoBotRow.classList.add('hidden');
+    if (el.btnBotMenu) el.btnBotMenu.classList.add('hidden');
+    if (el.botCommandsPopup) el.botCommandsPopup.classList.add('hidden');
+
+    try {
+      const res = await fetch(`/api/user/full?user_id=${chatId}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      const d = data.details;
+      if (!d) return;
+
+      if (d.about && el.infoBio && el.infoBioRow) {
+        el.infoBio.textContent = d.about;
+        el.infoBioRow.classList.remove('hidden');
+      }
+      if (d.birthday && el.infoBirthday && el.infoBirthdayRow) {
+        el.infoBirthday.textContent = d.birthday;
+        el.infoBirthdayRow.classList.remove('hidden');
+      }
+      if (d.business_address && el.infoBusiness && el.infoBusinessRow) {
+        el.infoBusiness.textContent = d.business_address;
+        el.infoBusinessRow.classList.remove('hidden');
+      }
+      if ((d.bot_description || (d.bot_commands && d.bot_commands.length > 0)) && el.infoBotRow) {
+        if (el.infoBotDesc) el.infoBotDesc.textContent = d.bot_description || 'Telegram Bot';
+        if (el.infoBotCommands) {
+          el.infoBotCommands.innerHTML = '';
+          d.bot_commands.forEach((c) => {
+            const item = document.createElement('div');
+            item.className = 'bot-cmd-item';
+            item.innerHTML = `<span class="bot-cmd-name">/${escapeHTML(c.command)}</span><span class="bot-cmd-desc">${escapeHTML(c.description)}</span>`;
+            item.addEventListener('click', () => {
+              el.messageInput.value = `/${c.command} `;
+              el.messageInput.focus();
+              if (el.botCommandsPopup) el.botCommandsPopup.classList.add('hidden');
+            });
+            el.infoBotCommands.appendChild(item);
+          });
+        }
+
+        if (d.bot_commands && d.bot_commands.length > 0 && el.botCommandsPopup && el.btnBotMenu) {
+          el.botCommandsPopup.innerHTML = '';
+          d.bot_commands.forEach((c) => {
+            const item = document.createElement('div');
+            item.className = 'bot-cmd-item';
+            item.innerHTML = `<span class="bot-cmd-name">/${escapeHTML(c.command)}</span><span class="bot-cmd-desc">${escapeHTML(c.description)}</span>`;
+            item.addEventListener('click', () => {
+              el.messageInput.value = `/${c.command} `;
+              el.messageInput.focus();
+              el.botCommandsPopup.classList.add('hidden');
+            });
+            el.botCommandsPopup.appendChild(item);
+          });
+          el.btnBotMenu.classList.remove('hidden');
+        }
+        el.infoBotRow.classList.remove('hidden');
+      }
+    } catch (e) {
+      // Ignore for channels or group dialogs
     }
   }
 
@@ -816,6 +1245,8 @@
     });
 
     el.messageStream.innerHTML = '';
+
+    const currentChat = state.chats.find((c) => c.id === chatId);
 
     let lastDate = '';
     messages.forEach((msg) => {
@@ -841,6 +1272,16 @@
       const row = document.createElement('div');
       row.className = 'message-row ' + (msg.out ? 'outgoing' : 'incoming');
 
+      // Group Sender Avatar on Left
+      let senderAvatarEl = null;
+      const isSticker = msg.media && msg.media.type === 'sticker';
+      if (!msg.out && currentChat && currentChat.type === 'group' && !isSticker) {
+        senderAvatarEl = document.createElement('div');
+        senderAvatarEl.className = `message-sender-avatar avatar ${getAvatarColorClass(msg.sender_id)}`;
+        senderAvatarEl.textContent = getInitials(msg.sender_name);
+        senderAvatarEl.title = msg.sender_name || 'Member';
+      }
+
       // Quick Reply Action Button on Hover
       const actions = document.createElement('div');
       actions.className = 'message-actions';
@@ -859,16 +1300,35 @@
       });
       actions.appendChild(btnReply);
 
+      // Forward Action Button (only if not restricted by noforwards)
+      const isForwardRestricted = msg.noforwards || (currentChat && currentChat.noforwards);
+      if (!isForwardRestricted && !msg.pending && msg.id > 0) {
+        const btnForward = document.createElement('button');
+        btnForward.className = 'btn-msg-action';
+        btnForward.title = 'Forward';
+        btnForward.innerHTML = `
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="15 14 20 9 15 4"></polyline>
+            <path d="M4 20v-7a4 4 0 0 1 4-4h12"></path>
+          </svg>
+        `;
+        btnForward.addEventListener('click', (e) => {
+          e.stopPropagation();
+          openForwardModal(msg);
+        });
+        actions.appendChild(btnForward);
+      }
+
       // Message Bubble
       const bubble = document.createElement('div');
-      const isSticker = msg.media && msg.media.type === 'sticker';
       bubble.className = 'message-bubble ' + (msg.out ? 'outgoing' : 'incoming') + (isSticker ? ' sticker-bubble' : '');
       bubble.dataset.id = msg.id;
 
-      // Sender Name for Incoming
-      if (!msg.out && msg.sender_name && !isSticker) {
+      // Sender Name for Incoming (only in group chats, colored by sender_id % 7)
+      if (!msg.out && msg.sender_name && !isSticker && currentChat && currentChat.type === 'group') {
         const senderEl = document.createElement('div');
-        senderEl.className = 'message-sender-name';
+        const colorIdx = Math.abs(msg.sender_id || 0) % 7;
+        senderEl.className = `message-sender-name sender-color-${colorIdx}`;
         senderEl.textContent = msg.sender_name;
         bubble.appendChild(senderEl);
       }
@@ -1102,7 +1562,7 @@
         bubble.appendChild(textEl);
       }
 
-      // Message Footer (Time & Ticks)
+      // Message Footer (Views, Time & Ticks)
       if (!isSticker) {
         const timeStr = new Date(msg.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
         let tickHtml = '';
@@ -1114,23 +1574,81 @@
           }
         }
 
+        let viewsHtml = '';
+        if (msg.views && msg.views > 0) {
+          viewsHtml = `<span class="message-views"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:middle;margin-right:2px;"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>${formatViews(msg.views)}</span>`;
+        }
+
         const footer = document.createElement('div');
         footer.className = 'message-footer';
-        footer.innerHTML = `<span>${timeStr}</span>${tickHtml}`;
+        footer.innerHTML = `${viewsHtml}<span>${timeStr}</span>${tickHtml}`;
         bubble.appendChild(footer);
       }
+
+      // Reactions Pills
+      if (msg.reactions && msg.reactions.length > 0) {
+        const reactionsContainer = document.createElement('div');
+        reactionsContainer.className = 'message-reactions';
+        msg.reactions.forEach((r) => {
+          const pill = document.createElement('button');
+          pill.type = 'button';
+          pill.className = 'reaction-pill' + (r.chosen ? ' chosen' : '');
+          pill.innerHTML = `<span class="reaction-emoji">${escapeHTML(r.reaction)}</span><span class="reaction-count">${r.count}</span>`;
+          pill.addEventListener('click', (e) => {
+            e.stopPropagation();
+            toggleReaction(msg.chat_id, msg.id, r.chosen ? '' : r.reaction);
+          });
+          reactionsContainer.appendChild(pill);
+        });
+        bubble.appendChild(reactionsContainer);
+      }
+
+      // Quick Reaction Floating Bar on Hover
+      const reactionHoverBar = document.createElement('div');
+      reactionHoverBar.className = 'message-reaction-hover-bar';
+      ['👍', '❤️', '🔥', '😂', '👏', '🎉'].forEach((em) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'hover-reaction-btn';
+        btn.textContent = em;
+        btn.title = `React ${em}`;
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const alreadyChosen = msg.reactions && msg.reactions.some((r) => r.chosen && r.reaction === em);
+          toggleReaction(msg.chat_id, msg.id, alreadyChosen ? '' : em);
+        });
+        reactionHoverBar.appendChild(btn);
+      });
+      bubble.appendChild(reactionHoverBar);
 
       // Assemble Row based on Outgoing/Incoming
       if (msg.out) {
         row.appendChild(actions);
         row.appendChild(bubble);
       } else {
+        if (senderAvatarEl) {
+          row.appendChild(senderAvatarEl);
+        }
         row.appendChild(bubble);
         row.appendChild(actions);
       }
 
       el.messageStream.appendChild(row);
     });
+  }
+
+  async function toggleReaction(chatId, msgId, reaction) {
+    sendWS('react_message', { chat_id: chatId, message_id: msgId, reaction });
+
+    try {
+      await fetch('/api/messages/react', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: chatId, message_id: msgId, reaction }),
+      });
+    } catch (e) {
+      console.error('React error:', e);
+    }
   }
 
   function handleNewMessage(msg) {
@@ -1356,6 +1874,34 @@
     };
     el.menuDrawerBackdrop.addEventListener('click', closeDrawer);
 
+    // Saved Messages
+    if (el.btnSavedMessages) {
+      el.btnSavedMessages.addEventListener('click', () => {
+        closeDrawer();
+        let savedChat = state.chats.find((c) => c.type === 'saved' || (state.user && c.id === state.user.id) || c.title === 'Saved Messages');
+        if (!savedChat) {
+          const selfId = state.user ? state.user.id : -9999;
+          savedChat = {
+            id: selfId,
+            type: 'saved',
+            title: 'Saved Messages',
+            unread_count: 0,
+          };
+          state.chats.unshift(savedChat);
+          renderChatList();
+        }
+        selectChat(savedChat.id);
+      });
+    }
+
+    // Pinned bar close button
+    if (el.btnClosePin) {
+      el.btnClosePin.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (el.pinnedBar) el.pinnedBar.classList.add('hidden');
+      });
+    }
+
     // Theme Switcher
     el.btnToggleTheme.addEventListener('click', () => {
       const current = document.documentElement.getAttribute('data-theme') || 'dark';
@@ -1370,6 +1916,22 @@
       if (confirm('Log out from Telegram?')) {
         await fetch('/api/auth/logout', { method: 'POST' });
         window.location.reload();
+      }
+    });
+
+    // Bot menu button toggle
+    if (el.btnBotMenu) {
+      el.btnBotMenu.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (el.botCommandsPopup) {
+          el.botCommandsPopup.classList.toggle('hidden');
+        }
+      });
+    }
+
+    document.addEventListener('click', (e) => {
+      if (el.botCommandsPopup && !el.botCommandsPopup.contains(e.target) && e.target !== el.btnBotMenu) {
+        el.botCommandsPopup.classList.add('hidden');
       }
     });
 
@@ -1483,8 +2045,24 @@
       el.lightboxBackdrop.addEventListener('click', closeLightbox);
     }
 
+    // Forward Modal
+    if (el.btnCloseForward) {
+      el.btnCloseForward.addEventListener('click', closeForwardModal);
+    }
+    if (el.forwardModalBackdrop) {
+      el.forwardModalBackdrop.addEventListener('click', closeForwardModal);
+    }
+    if (el.forwardSearch) {
+      el.forwardSearch.addEventListener('input', (e) => {
+        renderForwardChatList(e.target.value);
+      });
+    }
+
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {
+        if (el.forwardModal && !el.forwardModal.classList.contains('hidden')) {
+          closeForwardModal();
+        }
         if (el.mediaLightbox && !el.mediaLightbox.classList.contains('hidden')) {
           closeLightbox();
         }
@@ -1495,9 +2073,17 @@
     });
 
     // Infinite scroll up for older messages & scroll to bottom button
+    let scrollThrottleTimer = null;
     el.messageStream.addEventListener('scroll', () => {
-      if (el.messageStream.scrollTop < 60 && state.selectedChatId) {
-        loadOlderMessages(state.selectedChatId);
+      if (el.messageStream.scrollTop < 60 && state.selectedChatId && state.hasMoreOlder[state.selectedChatId] !== false && !state.loadingOlder) {
+        if (!scrollThrottleTimer) {
+          scrollThrottleTimer = setTimeout(() => {
+            scrollThrottleTimer = null;
+            if (el.messageStream.scrollTop < 60 && state.selectedChatId) {
+              loadOlderMessages(state.selectedChatId);
+            }
+          }, 350);
+        }
       }
 
       const distFromBottom = el.messageStream.scrollHeight - el.messageStream.scrollTop - el.messageStream.clientHeight;

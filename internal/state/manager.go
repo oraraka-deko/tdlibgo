@@ -197,6 +197,17 @@ func (s *StateManager) UpsertChat(c *models.Chat) {
 		if c.PhotoURL != "" {
 			existing.PhotoURL = c.PhotoURL
 		}
+		if c.PhotoID != 0 {
+			existing.PhotoID = c.PhotoID
+		}
+		if c.StrippedThumb != "" {
+			existing.StrippedThumb = c.StrippedThumb
+		}
+		if c.MembersCount > 0 {
+			existing.MembersCount = c.MembersCount
+		}
+		existing.NoForwards = c.NoForwards
+		existing.IsMuted = c.IsMuted
 		existing.Pinned = c.Pinned
 		existing.FolderID = c.FolderID
 		c = existing
@@ -271,6 +282,39 @@ func (s *StateManager) GetChats(folderID int, filterType string) []*models.Chat 
 	return res
 }
 
+// AppendHistoricalMessages bulk-inserts historical messages without broadcasting live new_message events.
+func (s *StateManager) AppendHistoricalMessages(chatID int64, msgs []*models.Message) {
+	if len(msgs) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	history := s.messages[chatID]
+	existingMap := make(map[int]int, len(history))
+	for i, m := range history {
+		existingMap[m.ID] = i
+	}
+
+	for _, msg := range msgs {
+		if msg == nil {
+			continue
+		}
+		if idx, found := existingMap[msg.ID]; found {
+			history[idx] = msg
+		} else {
+			history = append(history, msg)
+			existingMap[msg.ID] = len(history) - 1
+		}
+	}
+
+	sort.Slice(history, func(i, j int) bool {
+		return history[i].ID < history[j].ID
+	})
+
+	s.messages[chatID] = history
+}
+
 // AppendMessage appends a message to the chat history and updates the chat preview.
 func (s *StateManager) AppendMessage(msg *models.Message) {
 	s.mu.Lock()
@@ -339,6 +383,28 @@ func (s *StateManager) UpdateMessage(msg *models.Message) {
 			Payload: msg,
 		})
 	}
+}
+
+// UpdateMessageReactions updates reactions on an existing message and broadcasts.
+func (s *StateManager) UpdateMessageReactions(chatID int64, msgID int, reactions []models.ReactionCount) {
+	s.mu.Lock()
+	history := s.messages[chatID]
+	for _, m := range history {
+		if m.ID == msgID {
+			m.Reactions = reactions
+			break
+		}
+	}
+	s.mu.Unlock()
+
+	s.Broadcast(models.WSMessage{
+		Type: "message_reactions",
+		Payload: map[string]interface{}{
+			"chat_id":    chatID,
+			"message_id": msgID,
+			"reactions":  reactions,
+		},
+	})
 }
 
 // DeleteMessages removes message IDs from chat history.

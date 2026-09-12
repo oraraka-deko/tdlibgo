@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"math/rand"
@@ -421,6 +422,86 @@ func (c *ClientController) registerUpdateHandlers(dispatcher *tg.UpdateDispatche
 		c.state.SetUserStatus(u.UserID, isOnline)
 		return nil
 	})
+
+	dispatcher.OnMessageReactions(func(ctx context.Context, e tg.Entities, u *tg.UpdateMessageReactions) error {
+		peerID := c.extractPeerID(u.Peer)
+		if peerID == 0 {
+			return nil
+		}
+		var reactions []models.ReactionCount
+		for _, rc := range u.Reactions.Results {
+			var emoticon string
+			switch r := rc.Reaction.(type) {
+			case *tg.ReactionEmoji:
+				emoticon = r.Emoticon
+			case *tg.ReactionCustomEmoji:
+				emoticon = fmt.Sprintf("custom:%d", r.DocumentID)
+			case *tg.ReactionPaid:
+				emoticon = "⭐"
+			}
+			if emoticon != "" {
+				chosen := rc.Flags.Has(0) || rc.ChosenOrder > 0
+				reactions = append(reactions, models.ReactionCount{
+					Reaction: emoticon,
+					Count:    rc.Count,
+					Chosen:   chosen,
+				})
+			}
+		}
+		c.state.UpdateMessageReactions(peerID, u.MsgID, reactions)
+		return nil
+	})
+}
+
+// parseUserStatus formats tg.UserStatusClass into a friendly status string and online flag.
+func parseUserStatus(status tg.UserStatusClass) (string, bool) {
+	if status == nil {
+		return "", false
+	}
+	switch s := status.(type) {
+	case *tg.UserStatusOnline:
+		return "online", true
+	case *tg.UserStatusOffline:
+		t := time.Unix(int64(s.WasOnline), 0)
+		now := time.Now()
+		diff := now.Sub(t)
+		if diff < time.Minute {
+			return "last seen just now", false
+		} else if diff < time.Hour {
+			return fmt.Sprintf("last seen %d min ago", int(diff.Minutes())), false
+		} else if diff < 24*time.Hour && t.Day() == now.Day() {
+			return fmt.Sprintf("last seen today at %02d:%02d", t.Hour(), t.Minute()), false
+		} else if diff < 48*time.Hour {
+			return fmt.Sprintf("last seen yesterday at %02d:%02d", t.Hour(), t.Minute()), false
+		}
+		return fmt.Sprintf("last seen %s", t.Format("Jan 02")), false
+	case *tg.UserStatusRecently:
+		return "last seen recently", false
+	case *tg.UserStatusLastWeek:
+		return "last seen within a week", false
+	case *tg.UserStatusLastMonth:
+		return "last seen within a month", false
+	default:
+		return "", false
+	}
+}
+
+// parseEmojiStatus extracts custom emoji status or badge identifier.
+func parseEmojiStatus(es tg.EmojiStatusClass) string {
+	if es == nil {
+		return ""
+	}
+	switch s := es.(type) {
+	case *tg.EmojiStatusCollectible:
+		if s.Title != "" {
+			return s.Title
+		}
+		return "collectible"
+	case *tg.EmojiStatus:
+		return "status"
+	default:
+		return ""
+	}
 }
 
 // cacheEntities stores peers from Updates into StateManager.
@@ -439,6 +520,8 @@ func (c *ClientController) cacheEntities(e tg.Entities) {
 			photoURL = ExtractStrippedThumbURL(p.StrippedThumb)
 		}
 
+		statusText, isOnline := parseUserStatus(u.Status)
+
 		c.state.UpsertEntity(&models.EntityInfo{
 			ID:         id,
 			AccessHash: u.AccessHash,
@@ -447,6 +530,8 @@ func (c *ClientController) cacheEntities(e tg.Entities) {
 			Username:   u.Username,
 			Phone:      u.Phone,
 			PhotoURL:   photoURL,
+			StatusText: statusText,
+			IsOnline:   isOnline,
 		})
 	}
 
@@ -484,7 +569,23 @@ func (c *ClientController) cacheEntities(e tg.Entities) {
 }
 
 // tlMessageToModel maps a tg.Message to our Message struct.
-func (c *ClientController) tlMessageToModel(msg *tg.Message, e tg.Entities) *models.Message {
+func (c *ClientController) tlMessageToModel(msg *tg.Message, e tg.Entities) (model *models.Message) {
+	if msg == nil {
+		return nil
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			model = &models.Message{
+				ID:     msg.ID,
+				ChatID: c.extractPeerID(msg.PeerID),
+				Text:   msg.Message,
+				Date:   time.Unix(int64(msg.Date), 0),
+				Out:    msg.Out,
+				Status: "sent",
+			}
+		}
+	}()
+
 	chatID := c.extractPeerID(msg.PeerID)
 	senderID := c.extractPeerID(msg.FromID)
 	if senderID == 0 {
@@ -550,6 +651,29 @@ func (c *ClientController) tlMessageToModel(msg *tg.Message, e tg.Entities) *mod
 		status = "read"
 	}
 
+	var reactions []models.ReactionCount
+	if msg.Reactions.Results != nil {
+		for _, rc := range msg.Reactions.Results {
+			var emoticon string
+			switch r := rc.Reaction.(type) {
+			case *tg.ReactionEmoji:
+				emoticon = r.Emoticon
+			case *tg.ReactionCustomEmoji:
+				emoticon = fmt.Sprintf("custom:%d", r.DocumentID)
+			case *tg.ReactionPaid:
+				emoticon = "⭐"
+			}
+			if emoticon != "" {
+				chosen := rc.Flags.Has(0) || rc.ChosenOrder > 0
+				reactions = append(reactions, models.ReactionCount{
+					Reaction: emoticon,
+					Count:    rc.Count,
+					Chosen:   chosen,
+				})
+			}
+		}
+	}
+
 	return &models.Message{
 		ID:            msg.ID,
 		ChatID:        chatID,
@@ -565,13 +689,26 @@ func (c *ClientController) tlMessageToModel(msg *tg.Message, e tg.Entities) *mod
 		ForwardDate:   forwardDate,
 		ForwardPostID: forwardPostID,
 		Media:         media,
+		Reactions:     reactions,
 		EditDate:      time.Unix(int64(msg.EditDate), 0),
+		Views:         msg.Views,
+		Forwards:      msg.Forwards,
+		NoForwards:    msg.Noforwards,
 		Status:        status,
 	}
 }
 
 // tlServiceMessageToModel maps a tg.MessageService to a user-friendly Message struct.
-func (c *ClientController) tlServiceMessageToModel(msg *tg.MessageService, e tg.Entities) *models.Message {
+func (c *ClientController) tlServiceMessageToModel(msg *tg.MessageService, e tg.Entities) (model *models.Message) {
+	if msg == nil {
+		return nil
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			model = nil
+		}
+	}()
+
 	chatID := c.extractPeerID(msg.PeerID)
 	senderID := c.extractPeerID(msg.FromID)
 	if senderID == 0 {
@@ -666,18 +803,32 @@ func (c *ClientController) FetchDialogs(ctx context.Context) error {
 		}
 
 		var photoURL string
+		var strippedThumb string
+		var photoID int64
 		if p, ok := u.Photo.(*tg.UserProfilePhoto); ok {
-			photoURL = ExtractStrippedThumbURL(p.StrippedThumb)
+			strippedThumb = ExtractStrippedThumbURL(p.StrippedThumb)
+			photoID = p.PhotoID
+			if photoID != 0 {
+				photoURL = fmt.Sprintf("/api/avatar?peer_id=%d", u.ID)
+			} else {
+				photoURL = strippedThumb
+			}
 		}
 
+		statusText, isOnline := parseUserStatus(u.Status)
+
 		c.state.UpsertEntity(&models.EntityInfo{
-			ID:         u.ID,
-			AccessHash: u.AccessHash,
-			Type:       chatType,
-			Title:      name,
-			Username:   u.Username,
-			Phone:      u.Phone,
-			PhotoURL:   photoURL,
+			ID:            u.ID,
+			AccessHash:    u.AccessHash,
+			Type:          chatType,
+			Title:         name,
+			Username:      u.Username,
+			Phone:         u.Phone,
+			PhotoURL:      photoURL,
+			PhotoID:       photoID,
+			StrippedThumb: strippedThumb,
+			StatusText:    statusText,
+			IsOnline:      isOnline,
 		})
 	}
 
@@ -686,14 +837,26 @@ func (c *ClientController) FetchDialogs(ctx context.Context) error {
 		switch ch := cClass.(type) {
 		case *tg.Chat:
 			var photoURL string
+			var strippedThumb string
+			var photoID int64
 			if p, ok := ch.Photo.(*tg.ChatPhoto); ok {
-				photoURL = ExtractStrippedThumbURL(p.StrippedThumb)
+				strippedThumb = ExtractStrippedThumbURL(p.StrippedThumb)
+				photoID = p.PhotoID
+				if photoID != 0 {
+					photoURL = fmt.Sprintf("/api/avatar?peer_id=%d", ch.ID)
+				} else {
+					photoURL = strippedThumb
+				}
 			}
 			c.state.UpsertEntity(&models.EntityInfo{
-				ID:       ch.ID,
-				Type:     models.ChatTypeGroup,
-				Title:    ch.Title,
-				PhotoURL: photoURL,
+				ID:            ch.ID,
+				Type:          models.ChatTypeGroup,
+				Title:         ch.Title,
+				PhotoURL:      photoURL,
+				PhotoID:       photoID,
+				StrippedThumb: strippedThumb,
+				MembersCount:  ch.ParticipantsCount,
+				NoForwards:    ch.Noforwards,
 			})
 		case *tg.Channel:
 			chatType := models.ChatTypeChannel
@@ -701,16 +864,29 @@ func (c *ClientController) FetchDialogs(ctx context.Context) error {
 				chatType = models.ChatTypeGroup
 			}
 			var photoURL string
+			var strippedThumb string
+			var photoID int64
 			if p, ok := ch.Photo.(*tg.ChatPhoto); ok {
-				photoURL = ExtractStrippedThumbURL(p.StrippedThumb)
+				strippedThumb = ExtractStrippedThumbURL(p.StrippedThumb)
+				photoID = p.PhotoID
+				if photoID != 0 {
+					photoURL = fmt.Sprintf("/api/avatar?peer_id=%d", ch.ID)
+				} else {
+					photoURL = strippedThumb
+				}
 			}
 			c.state.UpsertEntity(&models.EntityInfo{
-				ID:         ch.ID,
-				AccessHash: ch.AccessHash,
-				Type:       chatType,
-				Title:      ch.Title,
-				Username:   ch.Username,
-				PhotoURL:   photoURL,
+				ID:            ch.ID,
+				AccessHash:    ch.AccessHash,
+				Type:          chatType,
+				Title:         ch.Title,
+				Username:      ch.Username,
+				PhotoURL:      photoURL,
+				PhotoID:       photoID,
+				StrippedThumb: strippedThumb,
+				MembersCount:  ch.ParticipantsCount,
+				IsVerified:    ch.Verified,
+				NoForwards:    ch.Noforwards,
 			})
 		}
 	}
@@ -741,6 +917,14 @@ func (c *ClientController) FetchDialogs(ctx context.Context) error {
 		chatType := models.ChatTypeUser
 		var accessHash int64
 		var photoURL string
+		var strippedThumb string
+		var photoID int64
+		var noForwards bool
+		var statusText string
+		var isOnline bool
+		var emojiStatus string
+		membersCount := 0
+		isVerified := false
 
 		if entity != nil {
 			title = entity.Title
@@ -748,6 +932,13 @@ func (c *ClientController) FetchDialogs(ctx context.Context) error {
 			chatType = entity.Type
 			accessHash = entity.AccessHash
 			photoURL = entity.PhotoURL
+			photoID = entity.PhotoID
+			strippedThumb = entity.StrippedThumb
+			noForwards = entity.NoForwards
+			statusText = entity.StatusText
+			isOnline = entity.IsOnline
+			membersCount = entity.MembersCount
+			isVerified = entity.IsVerified
 		}
 
 		if accessHash == 0 && c.peerDB != nil {
@@ -763,6 +954,7 @@ func (c *ClientController) FetchDialogs(ctx context.Context) error {
 					if username == "" {
 						username = p.User.Username
 					}
+					statusText, isOnline = parseUserStatus(p.User.Status)
 				} else if p.Channel != nil {
 					accessHash = p.Channel.AccessHash
 					if title == fmt.Sprintf("Chat %d", chatID) {
@@ -775,20 +967,40 @@ func (c *ClientController) FetchDialogs(ctx context.Context) error {
 			}
 		}
 
+		isMuted := d.NotifySettings.Silent || (d.NotifySettings.MuteUntil > int(time.Now().Unix()))
+
 		topMsgText := ""
 		topMsgSender := ""
+		topMsgMedia := ""
+		topMsgOut := false
+		topMsgRead := false
 		lastDate := time.Now()
 
 		if topMsg, ok := messagesMap[d.TopMessage]; ok {
 			mModel := c.tlMessageToModel(topMsg, tg.Entities{})
 			topMsgText = mModel.Text
 			lastDate = mModel.Date
-			senderID := c.extractPeerID(topMsg.FromID)
-			if senderEnt, ok := c.state.GetEntity(senderID); ok {
-				topMsgSender = senderEnt.Title
-				mModel.SenderName = topMsgSender
+			topMsgOut = mModel.Out
+			topMsgRead = (topMsg.Out && topMsg.ID <= d.ReadOutboxMaxID) || (!topMsg.Out && topMsg.ID <= d.ReadInboxMaxID)
+
+			if mModel.Media != nil {
+				topMsgMedia = mModel.Media.Type
+				if topMsgText == "" {
+					topMsgText = InspectMediaText(topMsg.Media)
+				}
+			}
+
+			if topMsg.Out {
+				topMsgSender = "You"
+			} else if chatType == models.ChatTypeGroup {
+				senderID := c.extractPeerID(topMsg.FromID)
+				if senderEnt, ok := c.state.GetEntity(senderID); ok {
+					topMsgSender = senderEnt.Title
+				}
 			}
 			c.state.AppendMessage(mModel)
+		} else if chatType == models.ChatTypeUser && statusText != "" {
+			topMsgText = statusText
 		}
 
 		c.state.UpsertChat(&models.Chat{
@@ -802,8 +1014,20 @@ func (c *ClientController) FetchDialogs(ctx context.Context) error {
 			TopMessageID:     d.TopMessage,
 			TopMessageText:   topMsgText,
 			TopMessageSender: topMsgSender,
+			TopMessageMedia:  topMsgMedia,
+			TopMessageOut:    topMsgOut,
+			TopMessageRead:   topMsgRead,
 			LastMessageDate:  lastDate,
 			PhotoURL:         photoURL,
+			PhotoID:          photoID,
+			StrippedThumb:    strippedThumb,
+			IsOnline:         isOnline,
+			StatusText:       statusText,
+			IsMuted:          isMuted,
+			EmojiStatus:      emojiStatus,
+			MembersCount:     membersCount,
+			IsVerified:       isVerified,
+			NoForwards:       noForwards,
 			AccessHash:       accessHash,
 		})
 	}
@@ -901,15 +1125,24 @@ func (c *ClientController) FetchHistory(ctx context.Context, chatID int64, limit
 	}
 
 	messages := mod.GetMessages()
+	var historicalMsgs []*models.Message
 	for _, mClass := range messages {
 		switch m := mClass.(type) {
 		case *tg.Message:
 			msgModel := c.tlMessageToModel(m, entities)
-			c.state.AppendMessage(msgModel)
+			if msgModel != nil {
+				historicalMsgs = append(historicalMsgs, msgModel)
+			}
 		case *tg.MessageService:
 			srvModel := c.tlServiceMessageToModel(m, entities)
-			c.state.AppendMessage(srvModel)
+			if srvModel != nil {
+				historicalMsgs = append(historicalMsgs, srvModel)
+			}
 		}
+	}
+	c.state.AppendHistoricalMessages(normChatID, historicalMsgs)
+	if chatID != normChatID {
+		c.state.AppendHistoricalMessages(chatID, historicalMsgs)
 	}
 
 	return nil
@@ -1122,6 +1355,11 @@ func NormalizeChatID(chatID int64) (normID int64, isChannel bool) {
 func (c *ClientController) resolveInputPeer(ctx context.Context, chatID int64) (tg.InputPeerClass, error) {
 	normID, isChannel := NormalizeChatID(chatID)
 
+	// Check if this is self (Saved Messages)
+	if selfProfile := c.state.GetUser(); selfProfile != nil && (normID == selfProfile.ID || chatID == selfProfile.ID) {
+		return &tg.InputPeerSelf{}, nil
+	}
+
 	// 1. Try Pebble peer storage first (contains permanent AccessHashes for users and channels)
 	if c.peerDB != nil {
 		if isChannel {
@@ -1251,3 +1489,295 @@ func (c *ClientController) resolveInputPeer(ctx context.Context, chatID int64) (
 
 	return nil, fmt.Errorf("unable to resolve input peer for chat id %d (normalized %d)", chatID, normID)
 }
+
+// SendReaction sends or removes a reaction on a message.
+func (c *ClientController) SendReaction(ctx context.Context, chatID int64, msgID int, reaction string) error {
+	if c.api == nil {
+		return errors.New("client api not initialized")
+	}
+
+	normChatID, _ := NormalizeChatID(chatID)
+	inputPeer, err := c.resolveInputPeer(ctx, normChatID)
+	if err != nil {
+		return err
+	}
+
+	req := &tg.MessagesSendReactionRequest{
+		Peer:  inputPeer,
+		MsgID: msgID,
+	}
+
+	if reaction != "" {
+		req.SetReaction([]tg.ReactionClass{
+			&tg.ReactionEmoji{Emoticon: reaction},
+		})
+		req.SetAddToRecent(true)
+	}
+
+	_, err = c.api.MessagesSendReaction(ctx, req)
+	if err != nil {
+		return errors.Wrap(err, "send reaction")
+	}
+
+	return nil
+}
+
+// GetAvailableReactions returns default and server reactions list.
+func (c *ClientController) GetAvailableReactions(ctx context.Context) ([]string, error) {
+	defaults := []string{"👍", "❤️", "🔥", "🎉", "👏", "😁", "🤔", "🤯", "😱", "🤬", "😢", "🤩", "🤮", "💩", "🙏", "👌", "🕊️", "🤡", "🥱", "🥴", "😍", "🐳", "❤️‍🔥", "🌚", "🌭", "💯", "🤣", "⚡", "🍌", "🏆", "💔", "🤨", "😐", "🍓", "🍾", "💋", "🖕", "😈", "😴", "😭", "🤓", "👻", "👀", "🎃", "🙈", "😇", "😨", "🤝", "✍️", "🤗", "🫡"}
+	if c.api == nil {
+		return defaults, nil
+	}
+
+	res, err := c.api.MessagesGetAvailableReactions(ctx, 0)
+	if err != nil {
+		return defaults, nil
+	}
+
+	if ar, ok := res.(*tg.MessagesAvailableReactions); ok {
+		var list []string
+		for _, r := range ar.Reactions {
+			if !r.Inactive && r.Reaction != "" {
+				list = append(list, r.Reaction)
+			}
+		}
+		if len(list) > 0 {
+			return list, nil
+		}
+	}
+
+	return defaults, nil
+}
+
+// GetFullUser retrieves extended profile, birthday, business info, and bot details.
+func (c *ClientController) GetFullUser(ctx context.Context, userID int64) (*models.UserFullDetails, error) {
+	if c.api == nil {
+		return nil, errors.New("client api not initialized")
+	}
+
+	normID, _ := NormalizeChatID(userID)
+	var inputUser tg.InputUserClass = &tg.InputUserSelf{}
+	if self := c.state.GetUser(); self == nil || self.ID != normID {
+		if ent, ok := c.state.GetEntity(normID); ok && ent.AccessHash != 0 {
+			inputUser = &tg.InputUser{UserID: normID, AccessHash: ent.AccessHash}
+		} else {
+			p, err := c.resolveInputPeer(ctx, normID)
+			if err != nil {
+				return nil, err
+			}
+			if pu, ok := p.(*tg.InputPeerUser); ok {
+				inputUser = &tg.InputUser{UserID: pu.UserID, AccessHash: pu.AccessHash}
+			} else {
+				return nil, fmt.Errorf("peer %d is not a user", normID)
+			}
+		}
+	}
+
+	res, err := c.api.UsersGetFullUser(ctx, inputUser)
+	if err != nil {
+		return nil, errors.Wrap(err, "get full user")
+	}
+
+	fu := res.FullUser
+	details := &models.UserFullDetails{
+		ID:                fu.ID,
+		About:             fu.About,
+		PersonalChannelID: fu.PersonalChannelID,
+		StarGiftsCount:    fu.StargiftsCount,
+		CommonChatsCount:  fu.CommonChatsCount,
+		PinnedMsgID:       fu.PinnedMsgID,
+	}
+
+	if fu.Birthday.Day > 0 && fu.Birthday.Month > 0 {
+		months := []string{"", "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"}
+		mName := fmt.Sprintf("%d", fu.Birthday.Month)
+		if fu.Birthday.Month >= 1 && fu.Birthday.Month <= 12 {
+			mName = months[fu.Birthday.Month]
+		}
+		if fu.Birthday.Year > 0 {
+			details.Birthday = fmt.Sprintf("%s %d, %d", mName, fu.Birthday.Day, fu.Birthday.Year)
+		} else {
+			details.Birthday = fmt.Sprintf("%s %d", mName, fu.Birthday.Day)
+		}
+	}
+
+	if fu.BusinessLocation.Address != "" {
+		details.BusinessAddress = fu.BusinessLocation.Address
+	}
+
+	if fu.BotInfo.Description != "" {
+		details.BotDescription = fu.BotInfo.Description
+	}
+
+	for _, cmd := range fu.BotInfo.Commands {
+		details.BotCommands = append(details.BotCommands, models.BotCommandItem{
+			Command:     cmd.Command,
+			Description: cmd.Description,
+		})
+	}
+
+	if fu.BotInfo.MenuButton != nil {
+		switch mb := fu.BotInfo.MenuButton.(type) {
+		case *tg.BotMenuButtonCommands:
+			details.BotMenuButton = &models.BotMenuButtonItem{Type: "commands"}
+		case *tg.BotMenuButton:
+			details.BotMenuButton = &models.BotMenuButtonItem{Type: "web_app", Text: mb.Text, URL: mb.URL}
+		case *tg.BotMenuButtonDefault:
+			details.BotMenuButton = &models.BotMenuButtonItem{Type: "default"}
+		}
+	}
+
+	return details, nil
+}
+
+// GetBotMenuButton fetches the bot menu button for a chat.
+func (c *ClientController) GetBotMenuButton(ctx context.Context, chatID int64) (*models.BotMenuButtonItem, error) {
+	if c.api == nil {
+		return nil, errors.New("client api not initialized")
+	}
+
+	normID, _ := NormalizeChatID(chatID)
+	var inputUser tg.InputUserClass
+	if ent, ok := c.state.GetEntity(normID); ok && ent.AccessHash != 0 {
+		inputUser = &tg.InputUser{UserID: normID, AccessHash: ent.AccessHash}
+	} else {
+		p, err := c.resolveInputPeer(ctx, normID)
+		if err != nil {
+			return nil, err
+		}
+		if pu, ok := p.(*tg.InputPeerUser); ok {
+			inputUser = &tg.InputUser{UserID: pu.UserID, AccessHash: pu.AccessHash}
+		} else {
+			return nil, fmt.Errorf("peer %d is not a user", normID)
+		}
+	}
+
+	res, err := c.api.BotsGetBotMenuButton(ctx, inputUser)
+	if err != nil {
+		return nil, errors.Wrap(err, "get bot menu button")
+	}
+
+	switch mb := res.(type) {
+	case *tg.BotMenuButtonCommands:
+		return &models.BotMenuButtonItem{Type: "commands"}, nil
+	case *tg.BotMenuButton:
+		return &models.BotMenuButtonItem{Type: "web_app", Text: mb.Text, URL: mb.URL}, nil
+	default:
+		return &models.BotMenuButtonItem{Type: "default"}, nil
+	}
+}
+
+// DownloadAvatar fetches the full resolution profile photo for a user, group, or channel.
+func (c *ClientController) DownloadAvatar(ctx context.Context, peerID int64, big bool) ([]byte, error) {
+	if c.api == nil {
+		return nil, errors.New("client api not initialized")
+	}
+
+	normID, _ := NormalizeChatID(peerID)
+
+	// Helper to extract StrippedThumb bytes as fallback
+	getStrippedThumb := func() ([]byte, error) {
+		thumbStr := ""
+		if ent, ok := c.state.GetEntity(normID); ok && ent.StrippedThumb != "" {
+			thumbStr = ent.StrippedThumb
+		} else if chat, ok := c.state.GetChat(normID); ok && chat.StrippedThumb != "" {
+			thumbStr = chat.StrippedThumb
+		}
+		if thumbStr != "" {
+			parts := strings.Split(thumbStr, ",")
+			if len(parts) == 2 {
+				if b, err := base64.StdEncoding.DecodeString(parts[1]); err == nil && len(b) > 0 {
+					return b, nil
+				}
+			}
+		}
+		return nil, errors.New("no avatar photo available for peer")
+	}
+
+	// 1. Check local cache dir first
+	cacheDir := filepath.Join("session", "avatars")
+	_ = os.MkdirAll(cacheDir, 0755)
+	sizeTag := "small"
+	if big {
+		sizeTag = "big"
+	}
+	cacheFile := filepath.Join(cacheDir, fmt.Sprintf("%d_%s.jpg", normID, sizeTag))
+	if data, err := os.ReadFile(cacheFile); err == nil && len(data) > 0 {
+		return data, nil
+	}
+
+	// 2. Resolve PhotoID and InputPeer
+	var photoID int64
+	if ent, ok := c.state.GetEntity(normID); ok && ent.PhotoID != 0 {
+		photoID = ent.PhotoID
+	} else if chat, ok := c.state.GetChat(normID); ok && chat.PhotoID != 0 {
+		photoID = chat.PhotoID
+	}
+
+	inputPeer, err := c.resolveInputPeer(ctx, normID)
+	if err == nil && inputPeer != nil && photoID != 0 {
+		loc := &tg.InputPeerPhotoFileLocation{
+			Peer:    inputPeer,
+			PhotoID: photoID,
+			Big:     big,
+		}
+
+		dlCtx, dlCancel := context.WithTimeout(ctx, 4*time.Second)
+		res, err := c.api.UploadGetFile(dlCtx, &tg.UploadGetFileRequest{
+			Location: loc,
+			Offset:   0,
+			Limit:    1024 * 1024,
+		})
+		dlCancel()
+
+		if err == nil && res != nil {
+			if uf, ok := res.(*tg.UploadFile); ok && len(uf.Bytes) > 0 {
+				_ = os.WriteFile(cacheFile, uf.Bytes, 0644)
+				return uf.Bytes, nil
+			}
+		}
+	}
+
+	// 3. Fallback to StrippedThumb if direct MTProto download fails or photoID is missing
+	return getStrippedThumb()
+}
+
+// ForwardMessages forwards one or more messages to another chat or saved messages.
+func (c *ClientController) ForwardMessages(ctx context.Context, fromChatID, toChatID int64, messageIDs []int) error {
+	if c.api == nil {
+		return errors.New("client api not initialized")
+	}
+	if len(messageIDs) == 0 {
+		return errors.New("no messages specified to forward")
+	}
+
+	normFromID, _ := NormalizeChatID(fromChatID)
+	fromPeer, err := c.resolveInputPeer(ctx, normFromID)
+	if err != nil {
+		return errors.Wrap(err, "resolve from peer")
+	}
+
+	normToID, _ := NormalizeChatID(toChatID)
+	toPeer, err := c.resolveInputPeer(ctx, normToID)
+	if err != nil {
+		return errors.Wrap(err, "resolve to peer")
+	}
+
+	randIDs := make([]int64, len(messageIDs))
+	for i := range randIDs {
+		randIDs[i] = rand.Int63()
+	}
+
+	_, err = c.api.MessagesForwardMessages(ctx, &tg.MessagesForwardMessagesRequest{
+		FromPeer: fromPeer,
+		ToPeer:   toPeer,
+		ID:       messageIDs,
+		RandomID: randIDs,
+	})
+	if err != nil {
+		return errors.Wrap(err, "forward messages")
+	}
+
+	return nil
+}
+

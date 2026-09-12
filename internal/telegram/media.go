@@ -24,7 +24,13 @@ func ExtractStrippedThumbURL(thumb []byte) string {
 }
 
 // ExtractMessageMedia parses tg.MessageMediaClass into models.MessageMedia.
-func ExtractMessageMedia(msg *tg.Message, chatID int64) *models.MessageMedia {
+func ExtractMessageMedia(msg *tg.Message, chatID int64) (media *models.MessageMedia) {
+	defer func() {
+		if r := recover(); r != nil {
+			media = nil
+		}
+	}()
+
 	if msg == nil || msg.Media == nil {
 		return nil
 	}
@@ -33,6 +39,9 @@ func ExtractMessageMedia(msg *tg.Message, chatID int64) *models.MessageMedia {
 
 	switch m := msg.Media.(type) {
 	case *tg.MessageMediaPhoto:
+		if m.Photo == nil {
+			return nil
+		}
 		photo, ok := m.Photo.AsNotEmpty()
 		if !ok {
 			return nil
@@ -68,6 +77,9 @@ func ExtractMessageMedia(msg *tg.Message, chatID int64) *models.MessageMedia {
 		}
 
 	case *tg.MessageMediaDocument:
+		if m.Document == nil {
+			return nil
+		}
 		doc, ok := m.Document.AsNotEmpty()
 		if !ok {
 			return nil
@@ -148,15 +160,21 @@ func ExtractMessageMedia(msg *tg.Message, chatID int64) *models.MessageMedia {
 		}
 
 	case *tg.MessageMediaPoll:
+		if m.Poll.Answers == nil {
+			return nil
+		}
 		poll := m.Poll
 		var options []models.PollOption
-		totalVotes := m.Results.TotalVoters
+		totalVotes := 0
 		voterMap := make(map[string]int)
 		chosenMap := make(map[string]bool)
-		for _, r := range m.Results.Results {
-			optKey := string(r.Option)
-			voterMap[optKey] = r.Voters
-			chosenMap[optKey] = r.Chosen
+		if m.Results.Results != nil {
+			totalVotes = m.Results.TotalVoters
+			for _, r := range m.Results.Results {
+				optKey := string(r.Option)
+				voterMap[optKey] = r.Voters
+				chosenMap[optKey] = r.Chosen
+			}
 		}
 		for _, ansClass := range poll.Answers {
 			ans, ok := ansClass.(*tg.PollAnswer)
@@ -194,7 +212,13 @@ func ExtractMessageMedia(msg *tg.Message, chatID int64) *models.MessageMedia {
 }
 
 // InspectMediaText returns a descriptive label when the message text caption is blank.
-func InspectMediaText(media tg.MessageMediaClass) string {
+func InspectMediaText(media tg.MessageMediaClass) (res string) {
+	defer func() {
+		if r := recover(); r != nil {
+			res = ""
+		}
+	}()
+
 	if media == nil {
 		return ""
 	}
