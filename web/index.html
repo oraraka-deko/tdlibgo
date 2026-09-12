@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Telegram Web</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="app.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%232481cc'><path d='M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.15 1.58-.8 5.42-1.13 7.19-.14.75-.42 1-.68 1.03-.58.05-1.02-.38-1.58-.75-.88-.58-1.38-.94-2.23-1.5-.99-.65-.35-1.01.22-1.59.15-.15 2.71-2.48 2.76-2.69a.2.2 0 00-.05-.18c-.06-.05-.14-.03-.21-.02-.09.02-1.49.95-4.22 2.79-.4.27-.76.41-1.08.4-.36-.01-1.04-.2-1.55-.37-.63-.2-1.12-.31-1.08-.66.02-.18.27-.36.74-.55 2.92-1.27 4.86-2.11 5.83-2.51 2.78-1.16 3.35-1.36 3.73-1.36.08 0 .27.02.39.12.1.08.13.19.14.27-.01.06.01.24 0 .37z'/></svg>">
+</head>
+<body>
+
+  <!-- Auth Screen Modal -->
+  <div id="auth-screen" class="auth-overlay">
+    <div class="auth-card">
+      <div class="auth-header">
+        <div class="tg-logo-wrapper">
+          <svg class="tg-logo" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.15 1.58-.8 5.42-1.13 7.19-.14.75-.42 1-.68 1.03-.58.05-1.02-.38-1.58-.75-.88-.58-1.38-.94-2.23-1.5-.99-.65-.35-1.01.22-1.59.15-.15 2.71-2.48 2.76-2.69a.2.2 0 00-.05-.18c-.06-.05-.14-.03-.21-.02-.09.02-1.49.95-4.22 2.79-.4.27-.76.41-1.08.4-.36-.01-1.04-.2-1.55-.37-.63-.2-1.12-.31-1.08-.66.02-.18.27-.36.74-.55 2.92-1.27 4.86-2.11 5.83-2.51 2.78-1.16 3.35-1.36 3.73-1.36.08 0 .27.02.39.12.1.08.13.19.14.27-.01.06.01.24 0 .37z"/>
+          </svg>
+        </div>
+        <h2 id="auth-title">Sign in to Telegram</h2>
+        <p id="auth-subtitle">Please confirm your country code and enter your phone number.</p>
+      </div>
+
+      <div id="auth-error-banner" class="auth-error hidden"></div>
+
+      <!-- Step 1: Phone Entry -->
+      <form id="auth-phone-form" class="auth-step-form">
+        <div class="input-group">
+          <label for="phone-input">Phone Number</label>
+          <input type="tel" id="phone-input" value="+12294660989" placeholder="+1..." autocomplete="tel" required>
+        </div>
+        <button type="submit" class="btn btn-primary" id="btn-send-phone">
+          <span>NEXT</span>
+          <div class="spinner hidden"></div>
+        </button>
+      </form>
+
+      <!-- Step 2: Verification Code -->
+      <form id="auth-code-form" class="auth-step-form hidden">
+        <div class="code-info-pill">
+          <span id="code-sent-target">+1 229 466 0989</span>
+          <button type="button" class="btn-text" id="btn-edit-phone">Edit</button>
+        </div>
+        <p class="code-tip">We've sent the code to the <strong>Telegram</strong> app on your other device.</p>
+        <div class="code-input-wrapper">
+          <input type="text" id="code-input" maxlength="6" placeholder="12345" autocomplete="one-time-code" autofocus>
+        </div>
+        <button type="submit" class="btn btn-primary" id="btn-submit-code">
+          <span>LOG IN</span>
+          <div class="spinner hidden"></div>
+        </button>
+      </form>
+
+      <!-- Step 3: 2FA Password -->
+      <form id="auth-password-form" class="auth-step-form hidden">
+        <div class="input-group">
+          <label for="password-input">2-Step Verification Password</label>
+          <div class="password-wrapper">
+            <input type="password" id="password-input" placeholder="Your password" required>
+            <button type="button" class="btn-icon btn-toggle-eye" id="btn-toggle-pwd">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+            </button>
+          </div>
+        </div>
+        <button type="submit" class="btn btn-primary" id="btn-submit-password">
+          <span>SUBMIT</span>
+          <div class="spinner hidden"></div>
+        </button>
+      </form>
+
+      <div class="auth-footer">
+        <span id="conn-badge" class="badge badge-connecting">Connecting...</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Main Telegram Web Application -->
+  <div id="app-container" class="app-container hidden">
+
+    <!-- Left Sidebar: Chat List -->
+    <aside id="sidebar-left" class="sidebar">
+      <!-- Top header with menu button and search -->
+      <div class="sidebar-header">
+        <button id="btn-main-menu" class="btn-icon" title="Menu">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="3" y1="12" x2="21" y2="12"></line>
+            <line x1="3" y1="6" x2="21" y2="6"></line>
+            <line x1="3" y1="18" x2="21" y2="18"></line>
+          </svg>
+        </button>
+        <div class="search-box">
+          <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="8"></circle>
+            <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+          </svg>
+          <input type="text" id="chat-search" placeholder="Search">
+          <button id="btn-clear-search" class="btn-icon hidden">✕</button>
+        </div>
+      </div>
+
+      <!-- Filter tabs -->
+      <nav class="chat-tabs">
+        <button class="tab-item active" data-type="all">All <span class="tab-badge" id="badge-all">0</span></button>
+        <button class="tab-item" data-type="private">Private</button>
+        <button class="tab-item" data-type="groups">Groups</button>
+        <button class="tab-item" data-type="channels">Channels</button>
+        <button class="tab-item" data-type="bots">Bots</button>
+        <button class="tab-item premium-tab" data-type="posts" title="Global Channel Post Search (Premium)">✨ Posts</button>
+      </nav>
+
+      <!-- Scrollable Chat List -->
+      <div id="chat-list" class="chat-list">
+        <div class="chat-list-placeholder">
+          <div class="spinner-large"></div>
+          <p>Loading conversations...</p>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Side Menu Modal/Drawer -->
+    <div id="menu-drawer-backdrop" class="drawer-backdrop hidden"></div>
+    <div id="menu-drawer" class="menu-drawer hidden">
+      <div class="drawer-user-card">
+        <div class="user-avatar" id="drawer-user-avatar">TG</div>
+        <div class="user-info">
+          <div class="user-name" id="drawer-user-name">Telegram User</div>
+          <div class="user-phone" id="drawer-user-phone">+1 ...</div>
+        </div>
+      </div>
+      <div class="drawer-menu-list">
+        <button class="drawer-item" id="btn-saved-messages">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"></path></svg>
+          <span>Saved Messages</span>
+        </button>
+        <button class="drawer-item" id="btn-toggle-theme">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
+          <span id="theme-text">Night Mode</span>
+        </button>
+        <div class="drawer-divider"></div>
+        <button class="drawer-item text-danger" id="btn-logout">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>
+          <span>Log Out</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Center Active Chat Area -->
+    <main id="chat-active-area" class="chat-area">
+      <!-- No chat selected state -->
+      <div id="no-chat-state" class="empty-chat-state">
+        <div class="empty-chat-pill">Select a chat to start messaging</div>
+      </div>
+
+      <!-- Active Chat View -->
+      <div id="active-chat-content" class="active-chat hidden">
+        <!-- Chat Header -->
+        <header class="chat-header">
+          <button id="btn-chat-back" class="btn-icon mobile-only">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"></polyline></svg>
+          </button>
+          <div class="chat-header-avatar" id="header-avatar">TG</div>
+          <div class="chat-header-info" id="btn-toggle-profile">
+            <h3 class="chat-header-title" id="header-title">Chat Title</h3>
+            <span class="chat-header-subtitle" id="header-subtitle">online</span>
+          </div>
+          <div class="chat-header-actions">
+            <button class="btn-icon" id="btn-info-drawer" title="Chat Info">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="10"></circle>
+                <line x1="12" y1="16" x2="12" y2="12"></line>
+                <line x1="12" y1="8" x2="12.01" y2="8"></line>
+              </svg>
+            </button>
+          </div>
+        </header>
+
+        <!-- Message History Feed -->
+        <div id="message-stream" class="message-stream">
+          <!-- Messages rendered here -->
+        </div>
+
+        <!-- Scroll down button -->
+        <button id="btn-scroll-bottom" class="btn-scroll-bottom hidden" title="Scroll to bottom">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"></polyline></svg>
+        </button>
+
+        <!-- Reply Dock Bar -->
+        <div id="reply-dock-bar" class="reply-dock-bar hidden">
+          <div class="reply-dock-border"></div>
+          <div class="reply-dock-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="9 17 4 12 9 7"></polyline>
+              <path d="M20 18v-2a4 4 0 0 0-4-4H4"></path>
+            </svg>
+          </div>
+          <div class="reply-dock-content">
+            <div class="reply-dock-title" id="reply-dock-title">Replying to User</div>
+            <div class="reply-dock-snippet" id="reply-dock-snippet">Message preview...</div>
+          </div>
+          <button id="btn-cancel-reply" class="btn-icon btn-close-reply" title="Cancel reply">✕</button>
+        </div>
+
+        <!-- Emoji Drawer Popover -->
+        <div id="emoji-drawer" class="emoji-drawer hidden">
+          <div class="emoji-tabs">
+            <button type="button" class="emoji-tab active" data-category="smileys">😀</button>
+            <button type="button" class="emoji-tab" data-category="gestures">👍</button>
+            <button type="button" class="emoji-tab" data-category="hearts">❤️</button>
+            <button type="button" class="emoji-tab" data-category="animals">🐱</button>
+            <button type="button" class="emoji-tab" data-category="objects">💡</button>
+          </div>
+          <div class="emoji-grid" id="emoji-grid">
+            <!-- Emojis populated by JS -->
+          </div>
+        </div>
+
+        <!-- Chat Input Bar -->
+        <footer class="chat-input-bar">
+          <button class="btn-icon" id="btn-attach" title="Attach file">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path></svg>
+          </button>
+          <div class="input-text-wrapper">
+            <textarea id="message-input" rows="1" placeholder="Write a message..."></textarea>
+          </div>
+          <button class="btn-icon" id="btn-emoji" title="Emojis">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><path d="M8 14s1.5 2 4 2 4-2 4-2"></path><line x1="9" y1="9" x2="9.01" y2="9"></line><line x1="15" y1="9" x2="15.01" y2="9"></line></svg>
+          </button>
+          <button class="btn-icon btn-send" id="btn-send-message" title="Send message">
+            <svg viewBox="0 0 24 24" fill="currentColor">
+              <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
+            </svg>
+          </button>
+        </footer>
+      </div>
+    </main>
+
+    <!-- Right Info Drawer / Profile Modal -->
+    <aside id="info-drawer" class="info-drawer hidden">
+      <div class="info-drawer-header">
+        <h4>User Info</h4>
+        <button id="btn-close-info" class="btn-icon">✕</button>
+      </div>
+      <div class="info-drawer-body">
+        <div class="info-avatar-wrapper">
+          <div class="large-avatar" id="info-avatar">TG</div>
+          <h3 id="info-name">Name</h3>
+          <span id="info-status">online</span>
+        </div>
+        <div class="info-section">
+          <div class="info-item" id="info-phone-row">
+            <div class="info-item-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"></path></svg>
+            </div>
+            <div class="info-item-content">
+              <div class="info-value" id="info-phone">+1 ...</div>
+              <div class="info-label">Phone</div>
+            </div>
+          </div>
+          <div class="info-item" id="info-username-row">
+            <div class="info-item-icon">@</div>
+            <div class="info-item-content">
+              <div class="info-value" id="info-username">username</div>
+              <div class="info-label">Username</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+  </div>
+
+  <!-- Media Lightbox Modal -->
+  <div id="media-lightbox" class="media-lightbox hidden">
+    <div class="lightbox-overlay" id="lightbox-backdrop"></div>
+    <div class="lightbox-container">
+      <button class="btn-icon lightbox-close" id="btn-close-lightbox">✕</button>
+      <div id="lightbox-media-wrapper" class="lightbox-media-wrapper">
+        <!-- Full image or video dynamically loaded -->
+      </div>
+      <div class="lightbox-footer">
+        <a id="lightbox-download-link" href="#" target="_blank" class="btn btn-secondary" download>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;margin-right:6px;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+          Download
+        </a>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

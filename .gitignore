@@ -1,0 +1,4 @@
+session/
+.env
+tdlibgo.exe
+go.sum
