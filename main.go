@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -14,9 +15,11 @@ import (
 
 	"github.com/joho/godotenv"
 
+	"tdlibgo/internal/logger"
 	"tdlibgo/internal/models"
 	"tdlibgo/internal/server"
 	"tdlibgo/internal/state"
+	"tdlibgo/internal/storage"
 	"tdlibgo/internal/telegram"
 )
 
@@ -62,11 +65,29 @@ func main() {
 	fmt.Printf("Web UI:   http://localhost:%d\n", port)
 	fmt.Println("==================================================================")
 
+	cleanPhone := strings.ReplaceAll(strings.ReplaceAll(phone, "+", ""), " ", "")
+	sessionDir := filepath.Join("session", "phone-"+cleanPhone)
+	_ = os.MkdirAll(sessionDir, 0755)
+
+	// Initialize structured high-visibility logger
+	logger.InitLogger(sessionDir, "telegram.log")
+	logger.Info("AUTH", "Starting Telegram Web Client for %s", phone)
+
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
 	// Initialize State Manager
 	stateMgr := state.NewStateManager(phone)
+
+	// Initialize Persistent History Database (bbolt)
+	dbPath := filepath.Join(sessionDir, "history.db")
+	historyDB, err := storage.OpenHistoryDB(dbPath)
+	if err != nil {
+		logger.Error("DB", "Failed to open persistent history database at %s: %v", dbPath, err)
+	} else {
+		stateMgr.SetHistoryDB(historyDB)
+		defer historyDB.Close()
+	}
 
 	// Initialize MTProto Client Controller
 	clientCtrl := telegram.NewClientController(appID, appHash, phone, stateMgr)

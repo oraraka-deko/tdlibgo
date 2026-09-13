@@ -120,6 +120,49 @@ type MessageMedia struct {
 	Poll       *PollInfo `json:"poll,omitempty"`        // poll details if Type == "poll"
 }
 
+// StarGiftAttribute describes unique collectible gift attribute (model, pattern, backdrop).
+type StarGiftAttribute struct {
+	Name         string `json:"name"`
+	Type         string `json:"type"` // "model", "pattern", "backdrop"
+	CenterColor  int    `json:"center_color,omitempty"`
+	EdgeColor    int    `json:"edge_color,omitempty"`
+	PatternColor int    `json:"pattern_color,omitempty"`
+	TextColor    int    `json:"text_color,omitempty"`
+	Rarity       string `json:"rarity,omitempty"` // e.g. "Rare", "Epic", "Legendary"
+	Crafted      bool   `json:"crafted,omitempty"`
+}
+
+// StarGiftInfo describes an official or unique Telegram star gift.
+type StarGiftInfo struct {
+	GiftID       int64               `json:"gift_id"`
+	Title        string              `json:"title"`
+	Slug         string              `json:"slug,omitempty"`
+	Num          int                 `json:"num,omitempty"`
+	Stars        int64               `json:"stars"`
+	ConvertStars int64               `json:"convert_stars,omitempty"`
+	FromID       int64               `json:"from_id,omitempty"`
+	FromName     string              `json:"from_name,omitempty"`
+	ToID         int64               `json:"to_id,omitempty"`
+	ToName       string              `json:"to_name,omitempty"`
+	Message      string              `json:"message,omitempty"`
+	IsUnique     bool                `json:"is_unique"`
+	IsUpgrade    bool                `json:"is_upgrade"`
+	IsRefunded   bool                `json:"is_refunded,omitempty"`
+	CanExportAt  int                 `json:"can_export_at,omitempty"`
+	CanTransfer  bool                `json:"can_transfer,omitempty"`
+	Model        string              `json:"model,omitempty"`
+	Symbol       string              `json:"symbol,omitempty"`
+	Backdrop     string              `json:"backdrop,omitempty"`
+	CenterColor  string              `json:"center_color,omitempty"`
+	EdgeColor    string              `json:"edge_color,omitempty"`
+	TextColor    string              `json:"text_color,omitempty"`
+	PatternColor string              `json:"pattern_color,omitempty"`
+	StickerURL   string              `json:"sticker_url,omitempty"`
+	ThumbURL     string              `json:"thumb_url,omitempty"`
+	Date         time.Time           `json:"date,omitempty"`
+	Attributes   []StarGiftAttribute `json:"attributes,omitempty"`
+}
+
 // Message represents a Telegram message.
 type Message struct {
 	ID            int           `json:"id"`
@@ -136,6 +179,7 @@ type Message struct {
 	ForwardDate   time.Time     `json:"forward_date,omitempty"`
 	ForwardPostID int           `json:"forward_post_id,omitempty"`
 	Media         *MessageMedia   `json:"media,omitempty"`
+	StarGift      *StarGiftInfo   `json:"star_gift,omitempty"`
 	Reactions     []ReactionCount `json:"reactions,omitempty"`
 	EditDate      time.Time       `json:"edit_date,omitempty"`
 	Views         int             `json:"views,omitempty"`
@@ -179,6 +223,7 @@ type UserFullDetails struct {
 	BotMenuButton     *BotMenuButtonItem `json:"bot_menu_button,omitempty"`
 	CommonChatsCount  int                `json:"common_chats_count,omitempty"`
 	PinnedMsgID       int                `json:"pinned_msg_id,omitempty"`
+	Gifts             []*StarGiftInfo    `json:"gifts,omitempty"`
 }
 
 // PostSearchResult represents a global public channel post search hit (Telegram Premium feature).

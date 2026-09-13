@@ -7,7 +7,9 @@ import (
 	"sync"
 	"time"
 
+	"tdlibgo/internal/logger"
 	"tdlibgo/internal/models"
+	"tdlibgo/internal/storage"
 )
 
 // StateManager is the thread-safe centralized in-memory state store.
@@ -18,9 +20,10 @@ type StateManager struct {
 	conn models.ConnectionStateType
 	user *models.UserProfile
 
-	chats    map[int64]*models.Chat
-	messages map[int64][]*models.Message // chatID -> messages sorted by ID ascending
-	entities map[int64]*models.EntityInfo
+	chats     map[int64]*models.Chat
+	messages  map[int64][]*models.Message // chatID -> messages sorted by ID ascending
+	entities  map[int64]*models.EntityInfo
+	historyDB *storage.HistoryDB
 
 	// WebSocket broadcast subscribers
 	subMu sync.Mutex
@@ -156,6 +159,36 @@ func (s *StateManager) GetFullState() models.FullState {
 	}
 }
 
+// SetHistoryDB attaches persistent storage and preloads cached chats into memory.
+func (s *StateManager) SetHistoryDB(db *storage.HistoryDB) {
+	s.mu.Lock()
+	s.historyDB = db
+	s.mu.Unlock()
+
+	if db == nil {
+		return
+	}
+
+	// Preload all cached chats from DB
+	if chats, err := db.GetAllChats(); err == nil && len(chats) > 0 {
+		s.mu.Lock()
+		for _, c := range chats {
+			if _, exists := s.chats[c.ID]; !exists {
+				s.chats[c.ID] = c
+			}
+		}
+		s.mu.Unlock()
+		logger.DB("Preloaded %d chats from persistent HistoryDB", len(chats))
+	}
+}
+
+// GetHistoryDB returns the active persistent database instance.
+func (s *StateManager) GetHistoryDB() *storage.HistoryDB {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.historyDB
+}
+
 // UpsertEntity stores/updates peer entity information.
 func (s *StateManager) UpsertEntity(info *models.EntityInfo) {
 	s.mu.Lock()
@@ -214,7 +247,12 @@ func (s *StateManager) UpsertChat(c *models.Chat) {
 	} else {
 		s.chats[c.ID] = c
 	}
+	db := s.historyDB
 	s.mu.Unlock()
+
+	if db != nil {
+		_ = db.SaveChat(c)
+	}
 
 	s.Broadcast(models.WSMessage{
 		Type:    "chat_updated",
@@ -288,7 +326,6 @@ func (s *StateManager) AppendHistoricalMessages(chatID int64, msgs []*models.Mes
 		return
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	history := s.messages[chatID]
 	existingMap := make(map[int]int, len(history))
@@ -313,6 +350,12 @@ func (s *StateManager) AppendHistoricalMessages(chatID int64, msgs []*models.Mes
 	})
 
 	s.messages[chatID] = history
+	db := s.historyDB
+	s.mu.Unlock()
+
+	if db != nil {
+		_ = db.SaveMessagesBatch(chatID, msgs)
+	}
 }
 
 // AppendMessage appends a message to the chat history and updates the chat preview.
@@ -348,7 +391,15 @@ func (s *StateManager) AppendMessage(msg *models.Message) {
 			chat.UnreadCount++
 		}
 	}
+	db := s.historyDB
 	s.mu.Unlock()
+
+	if db != nil {
+		_ = db.SaveMessage(msg)
+		if exists {
+			_ = db.SaveChat(chat)
+		}
+	}
 
 	s.Broadcast(models.WSMessage{
 		Type:    "new_message",
@@ -450,6 +501,12 @@ func (s *StateManager) GetMessages(chatID int64, limit int, offsetID int) []*mod
 		}
 	}
 	if len(history) == 0 {
+		// Fallback to local DB query if memory cache is cold
+		if s.historyDB != nil {
+			if dbMsgs, err := s.historyDB.GetMessages(chatID, limit, offsetID); err == nil && len(dbMsgs) > 0 {
+				return dbMsgs
+			}
+		}
 		return []*models.Message{}
 	}
 
@@ -477,6 +534,14 @@ func (s *StateManager) GetMessages(chatID int64, limit int, offsetID int) []*mod
 
 	res := make([]*models.Message, endIdx-startIdx)
 	copy(res, history[startIdx:endIdx])
+
+	// If fewer messages returned than requested and offset is needed, augment from DB
+	if len(res) < limit && s.historyDB != nil {
+		if dbMsgs, err := s.historyDB.GetMessages(chatID, limit, offsetID); err == nil && len(dbMsgs) > len(res) {
+			return dbMsgs
+		}
+	}
+
 	return res
 }
 

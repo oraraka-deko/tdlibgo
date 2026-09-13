@@ -15,6 +15,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"tdlibgo/internal/logger"
 	"tdlibgo/internal/models"
 	"tdlibgo/internal/state"
 	"tdlibgo/internal/telegram"
@@ -53,10 +54,12 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/chats", s.handleChats)
 	mux.HandleFunc("/api/messages", s.handleMessages)
 	mux.HandleFunc("/api/messages/send", s.handleSendMessage)
+	mux.HandleFunc("/api/messages/send-media", s.handleSendMedia)
 	mux.HandleFunc("/api/chats/read", s.handleReadChat)
 	mux.HandleFunc("/api/messages/react", s.handleReactMessage)
 	mux.HandleFunc("/api/reactions/available", s.handleAvailableReactions)
 	mux.HandleFunc("/api/user/full", s.handleUserFull)
+	mux.HandleFunc("/api/gifts", s.handleGifts)
 	mux.HandleFunc("/api/bot/menu", s.handleBotMenu)
 
 	// Media Streaming & Download Endpoint
@@ -285,9 +288,10 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		}
 		if shouldFetch {
 			s.historyCache.Store(cacheKey, time.Now())
-			ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
+			fetchCtx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 			defer cancel()
-			if err := s.client.FetchHistory(ctx, normChatID, limit, offsetID); err != nil {
+			if err := s.client.FetchHistory(fetchCtx, normChatID, limit, offsetID); err != nil {
+				s.historyCache.Delete(cacheKey)
 				fmt.Printf("[SERVER] FetchHistory error for chat %d: %v\n", normChatID, err)
 			}
 			messages = s.state.GetMessages(normChatID, limit, offsetID)
@@ -318,12 +322,75 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	sendCtx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
 
 	normChatID, _ := telegram.NormalizeChatID(req.ChatID)
-	msg, err := s.client.SendMessage(ctx, normChatID, req.Text, req.ReplyToMsgID)
+	msg, err := s.client.SendMessage(sendCtx, normChatID, req.Text, req.ReplyToMsgID)
 	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	s.writeJSON(w, http.StatusOK, msg)
+}
+
+// handleSendMedia uploads and sends photos, videos, audio, documents with optional captions.
+func (s *Server) handleSendMedia(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	// Support up to 512MB uploads
+	if err := r.ParseMultipartForm(512 << 20); err != nil {
+		s.writeError(w, http.StatusBadRequest, "failed to parse multipart form: "+err.Error())
+		return
+	}
+
+	chatIDStr := r.FormValue("chat_id")
+	chatID, err := strconv.ParseInt(chatIDStr, 10, 64)
+	if err != nil || chatID == 0 {
+		s.writeError(w, http.StatusBadRequest, "invalid chat_id")
+		return
+	}
+
+	mediaType := strings.ToLower(strings.TrimSpace(r.FormValue("type")))
+	caption := r.FormValue("caption")
+	replyToMsgID, _ := strconv.Atoi(r.FormValue("reply_to_msg_id"))
+
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, "missing 'file' in request form")
+		return
+	}
+	defer file.Close()
+
+	data, err := io.ReadAll(file)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "failed to read file: "+err.Error())
+		return
+	}
+
+	fileName := header.Filename
+	if fileName == "" {
+		fileName = "media.bin"
+	}
+
+	if mediaType == "" {
+		mediaType = "document"
+	}
+
+	normChatID, _ := telegram.NormalizeChatID(chatID)
+	logger.Upload("Received media send request: %s (%d bytes) for chat %d, type=%s, caption=%q", fileName, len(data), normChatID, mediaType, caption)
+
+	// Detached context so upload continues smoothly even if HTTP connection blips
+	uploadCtx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	defer cancel()
+
+	msg, err := s.client.SendMedia(uploadCtx, normChatID, mediaType, fileName, data, caption, replyToMsgID)
+	if err != nil {
+		logger.Error("UPLOAD", "Failed to send media %s: %v", fileName, err)
 		s.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -359,10 +426,29 @@ func (s *Server) handleMedia(w http.ResponseWriter, r *http.Request) {
 
 	isDownload := r.URL.Query().Get("download") == "1"
 
-	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
 	defer cancel()
 
-	// Intercept to set response headers once filename and MIME type are known
+	// 1. Try parallel DownloaderService with multi-DC routing, disk caching and HTTP Range (206) support
+	if dl := s.client.GetDownloader(); dl != nil {
+		if media, mType, err := s.client.ResolveMedia(ctx, normChatID, msgID); err == nil && media != nil && media.InputFileLoc != nil {
+			cachePath, fetchErr := dl.FetchOrDownloadWithDC(ctx, normChatID, msgID, media.InputFileLoc, media.DC, media.Size)
+			if fetchErr == nil {
+				dl.ServeMediaFile(w, r, cachePath, media.Name, mType, isDownload)
+				return
+			}
+			logger.Warn("DOWNLOAD", "FetchOrDownloadWithDC failed for [%d:%d]: %v (falling back to direct stream)", normChatID, msgID, fetchErr)
+		} else if loc, fName, mType, locErr := s.client.ResolveMediaFileLocation(ctx, normChatID, msgID); locErr == nil && loc != nil {
+			cachePath, fetchErr := dl.FetchOrDownload(ctx, normChatID, msgID, loc)
+			if fetchErr == nil {
+				dl.ServeMediaFile(w, r, cachePath, fName, mType, isDownload)
+				return
+			}
+			logger.Warn("DOWNLOAD", "FetchOrDownload failed for [%d:%d]: %v (falling back to direct stream)", normChatID, msgID, fetchErr)
+		}
+	}
+
+	// 2. Fallback to direct pipe streaming
 	pipeReader, pipeWriter := io.Pipe()
 
 	errCh := make(chan error, 1)
@@ -505,6 +591,27 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	subCh := s.state.Subscribe()
 	defer s.state.Unsubscribe(subCh)
 
+	// Subscribe to structured system logs for live streaming to frontend
+	unsubLogs := logger.Default().Subscribe(func(level string, tag string, message string, timestamp time.Time) {
+		logMsg := models.WSMessage{
+			Type: "system_log",
+			Payload: map[string]interface{}{
+				"level":     level,
+				"tag":       tag,
+				"message":   message,
+				"timestamp": timestamp.Format("15:04:05.000"),
+			},
+		}
+		data, err := json.Marshal(logMsg)
+		if err != nil {
+			return
+		}
+		writeCtx, wCancel := context.WithTimeout(ctx, 2*time.Second)
+		_ = c.Write(writeCtx, websocket.MessageText, data)
+		wCancel()
+	})
+	defer unsubLogs()
+
 	// Forward state manager broadcasts to client
 	go func() {
 		for {
@@ -548,6 +655,14 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		switch cmd.Type {
 		case "ping":
 			_ = c.Write(ctx, websocket.MessageText, []byte(`{"type":"pong"}`))
+
+		case "set_active_chat":
+			var p struct {
+				ChatID int64 `json:"chat_id"`
+			}
+			if err := json.Unmarshal(cmd.Payload, &p); err == nil {
+				s.client.SetActiveChat(p.ChatID)
+			}
 
 		case "submit_code":
 			var p struct {
@@ -679,6 +794,44 @@ func (s *Server) handleUserFull(w http.ResponseWriter, r *http.Request) {
 
 	s.writeJSON(w, http.StatusOK, map[string]interface{}{
 		"details": details,
+	})
+}
+
+// handleGifts returns saved star gifts for a peer (user or channel)
+func (s *Server) handleGifts(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	pStr := r.URL.Query().Get("peer_id")
+	peerID, err := strconv.ParseInt(pStr, 10, 64)
+	if err != nil || peerID == 0 {
+		s.writeError(w, http.StatusBadRequest, "invalid peer_id")
+		return
+	}
+
+	offset := r.URL.Query().Get("offset")
+	limit := 30
+	if lStr := r.URL.Query().Get("limit"); lStr != "" {
+		if l, err := strconv.Atoi(lStr); err == nil && l > 0 {
+			limit = l
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	gifts, count, err := s.client.GetSavedStarGifts(ctx, peerID, offset, limit)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	s.writeJSON(w, http.StatusOK, map[string]interface{}{
+		"peer_id": peerID,
+		"count":   count,
+		"gifts":   gifts,
 	})
 }
 

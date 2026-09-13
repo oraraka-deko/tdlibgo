@@ -17,7 +17,6 @@ import (
 	"github.com/go-faster/errors"
 	boltstor "github.com/gotd/contrib/bbolt"
 	"github.com/gotd/contrib/middleware/floodwait"
-	"github.com/gotd/contrib/middleware/ratelimit"
 	"github.com/gotd/contrib/pebble"
 	"github.com/gotd/contrib/storage"
 	"github.com/gotd/log/logzap"
@@ -31,10 +30,14 @@ import (
 	"go.etcd.io/bbolt"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
-	"golang.org/x/time/rate"
 	lj "gopkg.in/natefinch/lumberjack.v2"
 
+	"github.com/iyear/tdl/core/dcpool"
+	"github.com/iyear/tdl/core/tmedia"
+
+	"tdlibgo/internal/logger"
 	"tdlibgo/internal/models"
+	"tdlibgo/internal/services"
 	"tdlibgo/internal/state"
 )
 
@@ -47,8 +50,13 @@ type ClientController struct {
 
 	client          *gotdtg.Client
 	api             *tg.Client
+	pool            dcpool.Pool
 	peerDB          *pebble.PeerStorage
 	updatesRecovery *updates.Manager
+
+	uploader   *services.UploaderService
+	downloader *services.DownloaderService
+	syncer     *services.SyncerService
 
 	codeChan     chan string
 	passwordChan chan string
@@ -192,7 +200,6 @@ func (c *ClientController) runClient(ctx context.Context) error {
 		Middlewares: []gotdtg.Middleware{
 			waiter,
 			updhook.AffectedHook(updatesRecovery),
-			ratelimit.New(rate.Every(time.Millisecond*100), 5),
 		},
 	}
 
@@ -242,21 +249,35 @@ func (c *ClientController) runClient(ctx context.Context) error {
 			}
 			fmt.Printf("[AUTH] Successfully logged in as: %s (ID: %d)\n", name, self.ID)
 
-			// Populate dialogs and entity cache
-			go func() {
-				fetchCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				defer cancel()
-				if err := c.FetchDialogs(fetchCtx); err != nil {
-					fmt.Printf("[MTProto] Initial dialogs fetch error: %v\n", err)
-				}
-			}()
+			// Establish dedicated multi-DC connection pool from tdl/core
+			pool := dcpool.NewPool(client, 8)
+			c.pool = pool
+			defer pool.Close()
+			logger.MTProto("Dedicated tdl/core multi-DC connection pool active (up to 8 parallel TCP connections per DC).")
+
+			// Initialize worker services with dedicated multi-DC data pool
+			c.uploader = services.NewUploaderService(pool, c.api)
+			c.downloader = services.NewDownloaderService(pool, filepath.Join(sessionDir, "media_cache"))
+
+			// Populate initial dialogs and entity cache synchronously so chats & peers are immediately ready
+			fetchCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+			if err := c.FetchDialogs(fetchCtx); err != nil {
+				logger.Warn("MTProto", "Initial dialogs fetch error: %v", err)
+			}
+			cancel()
+
+			// Start background keep-alive and history syncer if local DB is present
+			if c.state.GetHistoryDB() != nil {
+				c.syncer = services.NewSyncerService(c, c.state, c.state.GetHistoryDB())
+				c.syncer.Start(ctx)
+			}
 
 			// Start update recovery loop
 			return updatesRecovery.Run(ctx, c.api, self.ID, updates.AuthOptions{
 				IsBot: self.Bot,
 				OnStart: func(ctx context.Context) {
 					c.state.SetConnectionState(models.ConnReady)
-					fmt.Println("[MTProto] Updates listener active and running.")
+					logger.MTProto("Updates listener active and running.")
 				},
 			})
 		})
@@ -716,6 +737,8 @@ func (c *ClientController) tlServiceMessageToModel(msg *tg.MessageService, e tg.
 	}
 
 	text := "Service notification"
+	var starGiftInfo *models.StarGiftInfo
+
 	if msg.Action != nil {
 		switch a := msg.Action.(type) {
 		case *tg.MessageActionChatEditPhoto:
@@ -734,6 +757,38 @@ func (c *ClientController) tlServiceMessageToModel(msg *tg.MessageService, e tg.
 			text = "User left the chat"
 		case *tg.MessageActionCustomAction:
 			text = a.Message
+		case *tg.MessageActionStarGift:
+			starGiftInfo = c.extractStarGiftFromAction(a, e, msg.Out)
+			if starGiftInfo != nil {
+				fromStr := starGiftInfo.FromName
+				if fromStr == "" {
+					fromStr = "Anonymous"
+				}
+				if msg.Out {
+					text = fmt.Sprintf("You sent a gift to %s", starGiftInfo.ToName)
+				} else {
+					text = fmt.Sprintf("%s transferred you a gift", fromStr)
+				}
+			} else {
+				text = "Transferred you a gift"
+			}
+		case *tg.MessageActionStarGiftUnique:
+			starGiftInfo = c.extractUniqueStarGiftFromAction(a, e, msg.Out)
+			if starGiftInfo != nil {
+				fromStr := starGiftInfo.FromName
+				if fromStr == "" {
+					fromStr = "Anonymous"
+				}
+				if a.Upgrade {
+					text = fmt.Sprintf("Gift upgraded to %s #%d", starGiftInfo.Title, starGiftInfo.Num)
+				} else if msg.Out {
+					text = fmt.Sprintf("You transferred a collectible gift to %s", starGiftInfo.ToName)
+				} else {
+					text = fmt.Sprintf("%s transferred you a gift", fromStr)
+				}
+			} else {
+				text = "Transferred you a collectible gift"
+			}
 		}
 	}
 
@@ -746,6 +801,7 @@ func (c *ClientController) tlServiceMessageToModel(msg *tg.MessageService, e tg.
 		Out:       msg.Out,
 		Status:    "sent",
 		IsService: true,
+		StarGift:  starGiftInfo,
 	}
 }
 
@@ -830,6 +886,14 @@ func (c *ClientController) FetchDialogs(ctx context.Context) error {
 			StatusText:    statusText,
 			IsOnline:      isOnline,
 		})
+
+		// Save non-min user to persistent pebble storage
+		if c.peerDB != nil && !u.Min && u.AccessHash != 0 {
+			var p storage.Peer
+			if p.FromUser(u) {
+				_ = c.peerDB.Add(ctx, p)
+			}
+		}
 	}
 
 	// Cache Chats & Channels
@@ -888,6 +952,13 @@ func (c *ClientController) FetchDialogs(ctx context.Context) error {
 				IsVerified:    ch.Verified,
 				NoForwards:    ch.Noforwards,
 			})
+
+			if c.peerDB != nil && !ch.Min && ch.AccessHash != 0 {
+				var p storage.Peer
+				if p.FromChat(ch) {
+					_ = c.peerDB.Add(ctx, p)
+				}
+			}
 		}
 	}
 
@@ -1051,12 +1122,19 @@ func (c *ClientController) FetchHistory(ctx context.Context, chatID int64, limit
 		limit = 50
 	}
 
-	res, err := c.api.MessagesGetHistory(ctx, &tg.MessagesGetHistoryRequest{
-		Peer:     inputPeer,
-		OffsetID: offsetID,
-		Limit:    limit,
+	var res tg.MessagesMessagesClass
+	opName := fmt.Sprintf("FetchHistory chat=%d limit=%d", normChatID, limit)
+	err = services.WithRetry(ctx, opName, services.DefaultRetryConfig(), func(attemptCtx context.Context) error {
+		var fErr error
+		res, fErr = c.api.MessagesGetHistory(attemptCtx, &tg.MessagesGetHistoryRequest{
+			Peer:     inputPeer,
+			OffsetID: offsetID,
+			Limit:    limit,
+		})
+		return fErr
 	})
 	if err != nil {
+		logger.Error("MTProto", "FetchHistory failed for %d: %v", normChatID, err)
 		return errors.Wrap(err, "get history")
 	}
 
@@ -1172,8 +1250,15 @@ func (c *ClientController) SendMessage(ctx context.Context, chatID int64, text s
 		})
 	}
 
-	updatesClass, err := c.api.MessagesSendMessage(ctx, req)
+	var updatesClass tg.UpdatesClass
+	opName := fmt.Sprintf("SendMessage chat=%d len=%d", normChatID, len(text))
+	err = services.WithRetry(ctx, opName, services.DefaultRetryConfig(), func(attemptCtx context.Context) error {
+		var sErr error
+		updatesClass, sErr = c.api.MessagesSendMessage(attemptCtx, req)
+		return sErr
+	})
 	if err != nil {
+		logger.Error("MTProto", "SendMessage failed for %d: %v", normChatID, err)
 		return nil, errors.Wrap(err, "send message")
 	}
 
@@ -1242,10 +1327,67 @@ func (c *ClientController) SendMessage(ctx context.Context, chatID int64, text s
 	}
 
 	c.state.AppendMessage(msgModel)
+	logger.MTProto("Message %d sent to chat %d successfully", msgID, normChatID)
 	return msgModel, nil
 }
 
-// DownloadMedia streams a message's media file directly to an io.Writer.
+// SendMedia uploads media chunks and dispatches MessagesSendMedia to Telegram.
+func (c *ClientController) SendMedia(
+	ctx context.Context,
+	chatID int64,
+	mediaType string,
+	fileName string,
+	data []byte,
+	caption string,
+	replyToMsgID int,
+) (*models.Message, error) {
+	if c.uploader == nil {
+		return nil, errors.New("uploader service not initialized")
+	}
+
+	normChatID, _ := NormalizeChatID(chatID)
+	peer, err := c.resolveInputPeer(ctx, normChatID)
+	if err != nil {
+		return nil, err
+	}
+
+	var msg *models.Message
+	opName := fmt.Sprintf("SendMedia %s (%d bytes) to %d", fileName, len(data), normChatID)
+	err = services.WithRetry(ctx, opName, services.DefaultRetryConfig(), func(attemptCtx context.Context) error {
+		var uErr error
+		msg, uErr = c.uploader.UploadAndSendMedia(attemptCtx, peer, normChatID, fileName, data, mediaType, caption, replyToMsgID)
+		return uErr
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	c.state.AppendMessage(msg)
+	return msg, nil
+}
+
+// GetDownloader returns the active downloader service.
+func (c *ClientController) GetDownloader() *services.DownloaderService {
+	return c.downloader
+}
+
+// SetActiveChat informs the background syncer about user focus.
+func (c *ClientController) SetActiveChat(chatID int64) {
+	if c.syncer != nil {
+		c.syncer.SetActiveChat(chatID)
+	}
+}
+
+// Ping issues a lightweight MTProto call to keep the TCP connection alive.
+func (c *ClientController) Ping(ctx context.Context) error {
+	if c.api == nil {
+		return errors.New("api not initialized")
+	}
+	_, err := c.api.HelpGetNearestDC(ctx)
+	return err
+}
+
+// DownloadMedia streams a message's media file directly to an io.Writer using tdl/core multi-DC pool.
 func (c *ClientController) DownloadMedia(ctx context.Context, chatID int64, messageID int, w io.Writer) (filename, mimeType string, err error) {
 	if c.api == nil {
 		return "", "", errors.New("client api not initialized")
@@ -1284,18 +1426,163 @@ func (c *ClientController) DownloadMedia(ctx context.Context, chatID int64, mess
 		return "", "", errors.New("message or media attachment not found")
 	}
 
-	file, ok := qmessages.Elem{Msg: tgMsg}.File()
-	if !ok {
+	var (
+		loc  tg.InputFileLocationClass
+		name string
+		mime string
+		dc   int
+		size int64
+	)
+
+	// Extract media metadata and target DC using tdl/core/tmedia
+	if m, ok := tmedia.ExtractMedia(tgMsg.Media); ok {
+		loc = m.InputFileLoc
+		name = m.Name
+		dc = m.DC
+		size = m.Size
+	}
+
+	qElem := qmessages.Elem{Msg: tgMsg}
+	if file, ok := qElem.File(); ok {
+		if loc == nil {
+			loc = file.Location
+		}
+		if name == "" {
+			name = file.Name
+		}
+		mime = file.MIMEType
+	}
+
+	if loc == nil {
 		return "", "", errors.New("file location could not be resolved from message media")
 	}
 
-	d := downloader.NewDownloader()
-	_, err = d.Download(c.api, file.Location).Stream(ctx, w)
-	if err != nil {
-		return file.Name, file.MIMEType, errors.Wrap(err, "stream download")
+	if c.downloader != nil {
+		cachePath, err := c.downloader.FetchOrDownloadWithDC(ctx, normChatID, messageID, loc, dc, size)
+		if err != nil {
+			return name, mime, err
+		}
+		// Stream to writer
+		f, err := os.Open(cachePath)
+		if err != nil {
+			return name, mime, err
+		}
+		defer f.Close()
+		_, _ = io.Copy(w, f)
+		return name, mime, nil
 	}
 
-	return file.Name, file.MIMEType, nil
+	var dlClient *tg.Client = c.api
+	if dc > 0 && c.pool != nil {
+		dlClient = c.pool.Client(ctx, dc)
+	}
+
+	d := downloader.NewDownloader().WithPartSize(1024 * 1024)
+	_, err = d.Download(dlClient, loc).Stream(ctx, w)
+	if err != nil {
+		return name, mime, errors.Wrap(err, "stream download")
+	}
+
+	return name, mime, nil
+}
+
+// ResolveMedia extracts tmedia.Media (DC, Location, Size, Name) and MIME type for a message.
+func (c *ClientController) ResolveMedia(ctx context.Context, chatID int64, messageID int) (*tmedia.Media, string, error) {
+	if c.api == nil {
+		return nil, "", errors.New("client api not initialized")
+	}
+
+	normChatID, _ := NormalizeChatID(chatID)
+	inputPeer, err := c.resolveInputPeer(ctx, normChatID)
+	if err != nil {
+		return nil, "", err
+	}
+
+	var tgMsg *tg.Message
+	switch p := inputPeer.(type) {
+	case *tg.InputPeerChannel:
+		res, err := c.api.ChannelsGetMessages(ctx, &tg.ChannelsGetMessagesRequest{
+			Channel: &tg.InputChannel{ChannelID: p.ChannelID, AccessHash: p.AccessHash},
+			ID:      []tg.InputMessageClass{&tg.InputMessageID{ID: messageID}},
+		})
+		if err != nil {
+			return nil, "", errors.Wrap(err, "get channel message")
+		}
+		if mod, ok := res.AsModified(); ok && len(mod.GetMessages()) > 0 {
+			tgMsg, _ = mod.GetMessages()[0].(*tg.Message)
+		}
+	default:
+		res, err := c.api.MessagesGetMessages(ctx, []tg.InputMessageClass{&tg.InputMessageID{ID: messageID}})
+		if err != nil {
+			return nil, "", errors.Wrap(err, "get message")
+		}
+		if mod, ok := res.AsModified(); ok && len(mod.GetMessages()) > 0 {
+			tgMsg, _ = mod.GetMessages()[0].(*tg.Message)
+		}
+	}
+
+	if tgMsg == nil || tgMsg.Media == nil {
+		return nil, "", errors.New("message or media attachment not found")
+	}
+
+	mimeType := ""
+	qElem := qmessages.Elem{Msg: tgMsg}
+	if file, ok := qElem.File(); ok {
+		mimeType = file.MIMEType
+	}
+
+	if media, ok := tmedia.ExtractMedia(tgMsg.Media); ok {
+		return media, mimeType, nil
+	}
+
+	return nil, mimeType, errors.New("media metadata could not be extracted")
+}
+
+// ResolveMediaFileLocation finds the underlying file location and metadata for a message.
+func (c *ClientController) ResolveMediaFileLocation(ctx context.Context, chatID int64, messageID int) (tg.InputFileLocationClass, string, string, error) {
+	if c.api == nil {
+		return nil, "", "", errors.New("client api not initialized")
+	}
+
+	normChatID, _ := NormalizeChatID(chatID)
+	inputPeer, err := c.resolveInputPeer(ctx, normChatID)
+	if err != nil {
+		return nil, "", "", err
+	}
+
+	var tgMsg *tg.Message
+	switch p := inputPeer.(type) {
+	case *tg.InputPeerChannel:
+		res, err := c.api.ChannelsGetMessages(ctx, &tg.ChannelsGetMessagesRequest{
+			Channel: &tg.InputChannel{ChannelID: p.ChannelID, AccessHash: p.AccessHash},
+			ID:      []tg.InputMessageClass{&tg.InputMessageID{ID: messageID}},
+		})
+		if err != nil {
+			return nil, "", "", errors.Wrap(err, "get channel message")
+		}
+		if mod, ok := res.AsModified(); ok && len(mod.GetMessages()) > 0 {
+			tgMsg, _ = mod.GetMessages()[0].(*tg.Message)
+		}
+	default:
+		res, err := c.api.MessagesGetMessages(ctx, []tg.InputMessageClass{&tg.InputMessageID{ID: messageID}})
+		if err != nil {
+			return nil, "", "", errors.Wrap(err, "get message")
+		}
+		if mod, ok := res.AsModified(); ok && len(mod.GetMessages()) > 0 {
+			tgMsg, _ = mod.GetMessages()[0].(*tg.Message)
+		}
+	}
+
+	if tgMsg == nil || tgMsg.Media == nil {
+		return nil, "", "", errors.New("message or media attachment not found")
+	}
+
+	file, ok := qmessages.Elem{Msg: tgMsg}.File()
+	if !ok {
+		return nil, "", "", errors.New("file location could not be resolved from message media")
+	}
+
+	return file.Location, file.Name, file.MIMEType, nil
 }
 
 // MarkAsRead sends read history receipt.
@@ -1360,28 +1647,7 @@ func (c *ClientController) resolveInputPeer(ctx context.Context, chatID int64) (
 		return &tg.InputPeerSelf{}, nil
 	}
 
-	// 1. Try Pebble peer storage first (contains permanent AccessHashes for users and channels)
-	if c.peerDB != nil {
-		if isChannel {
-			if p, err := storage.FindPeer(ctx, c.peerDB, &tg.PeerChannel{ChannelID: normID}); err == nil {
-				return p.AsInputPeer(), nil
-			}
-		}
-
-		if p, err := storage.FindPeer(ctx, c.peerDB, &tg.PeerUser{UserID: normID}); err == nil {
-			return p.AsInputPeer(), nil
-		}
-
-		if p, err := storage.FindPeer(ctx, c.peerDB, &tg.PeerChannel{ChannelID: normID}); err == nil {
-			return p.AsInputPeer(), nil
-		}
-
-		if p, err := storage.FindPeer(ctx, c.peerDB, &tg.PeerChat{ChatID: normID}); err == nil {
-			return p.AsInputPeer(), nil
-		}
-	}
-
-	// 2. Try In-Memory State Chats
+	// 1. Try In-Memory State Chats (authoritative from live GetDialogs)
 	for _, id := range []int64{normID, chatID} {
 		if chat, ok := c.state.GetChat(id); ok {
 			switch chat.Type {
@@ -1413,7 +1679,7 @@ func (c *ClientController) resolveInputPeer(ctx context.Context, chatID int64) (
 		}
 	}
 
-	// 3. Try In-Memory State Entities
+	// 2. Try In-Memory State Entities
 	for _, id := range []int64{normID, chatID} {
 		if ent, ok := c.state.GetEntity(id); ok {
 			switch ent.Type {
@@ -1445,6 +1711,35 @@ func (c *ClientController) resolveInputPeer(ctx context.Context, chatID int64) (
 		}
 	}
 
+	// 3. Try Pebble peer storage (only accept full non-min peers with valid access hashes)
+	if c.peerDB != nil {
+		if isChannel {
+			if p, err := storage.FindPeer(ctx, c.peerDB, &tg.PeerChannel{ChannelID: normID}); err == nil {
+				if p.Channel != nil && !p.Channel.Min && p.Channel.AccessHash != 0 {
+					return &tg.InputPeerChannel{ChannelID: p.Channel.ID, AccessHash: p.Channel.AccessHash}, nil
+				}
+			}
+		}
+
+		if p, err := storage.FindPeer(ctx, c.peerDB, &tg.PeerUser{UserID: normID}); err == nil {
+			if p.User != nil && !p.User.Min && p.User.AccessHash != 0 {
+				return &tg.InputPeerUser{UserID: p.User.ID, AccessHash: p.User.AccessHash}, nil
+			}
+		}
+
+		if p, err := storage.FindPeer(ctx, c.peerDB, &tg.PeerChannel{ChannelID: normID}); err == nil {
+			if p.Channel != nil && !p.Channel.Min && p.Channel.AccessHash != 0 {
+				return &tg.InputPeerChannel{ChannelID: p.Channel.ID, AccessHash: p.Channel.AccessHash}, nil
+			}
+		}
+
+		if p, err := storage.FindPeer(ctx, c.peerDB, &tg.PeerChat{ChatID: normID}); err == nil {
+			if p.Chat != nil {
+				return &tg.InputPeerChat{ChatID: p.Chat.ID}, nil
+			}
+		}
+	}
+
 	// 4. Try resolving via username if available in chat or entity
 	var username string
 	if chat, ok := c.state.GetChat(normID); ok && chat.Username != "" {
@@ -1460,7 +1755,7 @@ func (c *ClientController) resolveInputPeer(ctx context.Context, chatID int64) (
 		})
 		if err == nil && res != nil {
 			for _, uClass := range res.Users {
-				if u, ok := uClass.(*tg.User); ok && u.ID == normID {
+				if u, ok := uClass.(*tg.User); ok && u.ID == normID && !u.Min && u.AccessHash != 0 {
 					c.state.UpsertEntity(&models.EntityInfo{
 						ID:         u.ID,
 						AccessHash: u.AccessHash,
@@ -1469,11 +1764,17 @@ func (c *ClientController) resolveInputPeer(ctx context.Context, chatID int64) (
 						Username:   u.Username,
 						Phone:      u.Phone,
 					})
+					if c.peerDB != nil {
+						var p storage.Peer
+						if p.FromUser(u) {
+							_ = c.peerDB.Add(ctx, p)
+						}
+					}
 					return &tg.InputPeerUser{UserID: u.ID, AccessHash: u.AccessHash}, nil
 				}
 			}
 			for _, chClass := range res.Chats {
-				if ch, ok := chClass.(*tg.Channel); ok && ch.ID == normID {
+				if ch, ok := chClass.(*tg.Channel); ok && ch.ID == normID && !ch.Min && ch.AccessHash != 0 {
 					c.state.UpsertEntity(&models.EntityInfo{
 						ID:         ch.ID,
 						AccessHash: ch.AccessHash,
@@ -1481,8 +1782,42 @@ func (c *ClientController) resolveInputPeer(ctx context.Context, chatID int64) (
 						Title:      ch.Title,
 						Username:   ch.Username,
 					})
+					if c.peerDB != nil {
+						var p storage.Peer
+						if p.FromChat(ch) {
+							_ = c.peerDB.Add(ctx, p)
+						}
+					}
 					return &tg.InputPeerChannel{ChannelID: ch.ID, AccessHash: ch.AccessHash}, nil
 				}
+			}
+		}
+	}
+
+	// 5. Fallback: if in-memory state was not populated, try a quick FetchDialogs and retry
+	if c.api != nil {
+		dCtx, dCancel := context.WithTimeout(ctx, 10*time.Second)
+		_ = c.FetchDialogs(dCtx)
+		dCancel()
+
+		if chat, ok := c.state.GetChat(normID); ok && chat.AccessHash != 0 {
+			switch chat.Type {
+			case models.ChatTypeUser, models.ChatTypeBot:
+				return &tg.InputPeerUser{UserID: normID, AccessHash: chat.AccessHash}, nil
+			case models.ChatTypeChannel:
+				return &tg.InputPeerChannel{ChannelID: normID, AccessHash: chat.AccessHash}, nil
+			case models.ChatTypeGroup:
+				return &tg.InputPeerChannel{ChannelID: normID, AccessHash: chat.AccessHash}, nil
+			}
+		}
+		if ent, ok := c.state.GetEntity(normID); ok && ent.AccessHash != 0 {
+			switch ent.Type {
+			case models.ChatTypeUser, models.ChatTypeBot:
+				return &tg.InputPeerUser{UserID: normID, AccessHash: ent.AccessHash}, nil
+			case models.ChatTypeChannel:
+				return &tg.InputPeerChannel{ChannelID: normID, AccessHash: ent.AccessHash}, nil
+			case models.ChatTypeGroup:
+				return &tg.InputPeerChannel{ChannelID: normID, AccessHash: ent.AccessHash}, nil
 			}
 		}
 	}
@@ -1624,6 +1959,14 @@ func (c *ClientController) GetFullUser(ctx context.Context, userID int64) (*mode
 			details.BotMenuButton = &models.BotMenuButtonItem{Type: "web_app", Text: mb.Text, URL: mb.URL}
 		case *tg.BotMenuButtonDefault:
 			details.BotMenuButton = &models.BotMenuButtonItem{Type: "default"}
+		}
+	}
+
+	// Fetch up to 30 gifts for user profile display
+	if gifts, _, err := c.GetSavedStarGifts(ctx, normID, "", 30); err == nil && len(gifts) > 0 {
+		details.Gifts = gifts
+		if details.StarGiftsCount == 0 {
+			details.StarGiftsCount = len(gifts)
 		}
 	}
 
@@ -1780,4 +2123,243 @@ func (c *ClientController) ForwardMessages(ctx context.Context, fromChatID, toCh
 
 	return nil
 }
+
+func (c *ClientController) extractStarGiftFromAction(a *tg.MessageActionStarGift, e tg.Entities, out bool) *models.StarGiftInfo {
+	if a == nil {
+		return nil
+	}
+	info := &models.StarGiftInfo{
+		ConvertStars: a.ConvertStars,
+		IsUpgrade:    a.UpgradeSeparate || a.PrepaidUpgrade,
+		CanExportAt:  0,
+	}
+
+	if a.Message.Text != "" {
+		info.Message = a.Message.Text
+	}
+
+	if a.FromID != nil {
+		info.FromID = c.extractPeerID(a.FromID)
+		if u, ok := e.Users[info.FromID]; ok {
+			info.FromName = strings.TrimSpace(u.FirstName + " " + u.LastName)
+		} else if ent, ok := c.state.GetEntity(info.FromID); ok {
+			info.FromName = ent.Title
+		}
+	}
+	if a.ToID != nil {
+		info.ToID = c.extractPeerID(a.ToID)
+		if u, ok := e.Users[info.ToID]; ok {
+			info.ToName = strings.TrimSpace(u.FirstName + " " + u.LastName)
+		} else if ent, ok := c.state.GetEntity(info.ToID); ok {
+			info.ToName = ent.Title
+		}
+	}
+
+	if a.Gift != nil {
+		c.fillStarGiftClass(a.Gift, info)
+	}
+
+	if info.Title == "" {
+		info.Title = "Telegram Star Gift"
+	}
+	return info
+}
+
+func (c *ClientController) extractUniqueStarGiftFromAction(a *tg.MessageActionStarGiftUnique, e tg.Entities, out bool) *models.StarGiftInfo {
+	if a == nil {
+		return nil
+	}
+	info := &models.StarGiftInfo{
+		IsUnique:    true,
+		IsUpgrade:   a.Upgrade,
+		IsRefunded:  a.Refunded,
+		CanExportAt: a.CanExportAt,
+		CanTransfer: a.CanTransferAt == 0 || a.CanTransferAt <= int(time.Now().Unix()),
+	}
+
+	if a.FromID != nil {
+		info.FromID = c.extractPeerID(a.FromID)
+		if u, ok := e.Users[info.FromID]; ok {
+			info.FromName = strings.TrimSpace(u.FirstName + " " + u.LastName)
+		} else if ent, ok := c.state.GetEntity(info.FromID); ok {
+			info.FromName = ent.Title
+		}
+	}
+
+	if a.Gift != nil {
+		c.fillStarGiftClass(a.Gift, info)
+	}
+
+	if info.Title == "" {
+		info.Title = "Unique Collectible Gift"
+	}
+	return info
+}
+
+func (c *ClientController) fillStarGiftClass(gift tg.StarGiftClass, info *models.StarGiftInfo) {
+	if gift == nil {
+		return
+	}
+	switch g := gift.(type) {
+	case *tg.StarGift:
+		info.GiftID = g.ID
+		info.Stars = g.Stars
+		if g.ConvertStars > 0 {
+			info.ConvertStars = g.ConvertStars
+		}
+		if g.Title != "" {
+			info.Title = g.Title
+		}
+		if bg, ok := g.GetBackground(); ok {
+			info.CenterColor = fmt.Sprintf("#%06X", bg.CenterColor)
+			info.EdgeColor = fmt.Sprintf("#%06X", bg.EdgeColor)
+			info.TextColor = fmt.Sprintf("#%06X", bg.TextColor)
+		}
+		if doc, ok := g.Sticker.(*tg.Document); ok {
+			info.StickerURL = fmt.Sprintf("/api/media?chat_id=%d&message_id=0&doc_id=%d", info.GiftID, doc.ID)
+			for _, t := range doc.Thumbs {
+				if s, ok := t.(*tg.PhotoStrippedSize); ok {
+					info.ThumbURL = ExtractStrippedThumbURL(s.Bytes)
+				}
+			}
+		}
+	case *tg.StarGiftUnique:
+		info.GiftID = g.GiftID
+		info.IsUnique = true
+		info.Title = g.Title
+		info.Slug = g.Slug
+		info.Num = g.Num
+
+		for _, attrClass := range g.Attributes {
+			switch attr := attrClass.(type) {
+			case *tg.StarGiftAttributeModel:
+				info.Model = attr.Name
+				var rarityStr string
+				if attr.Rarity != nil {
+					switch r := attr.Rarity.(type) {
+					case *tg.StarGiftAttributeRarityRare:
+						rarityStr = "Rare"
+					case *tg.StarGiftAttributeRarityEpic:
+						rarityStr = "Epic"
+					case *tg.StarGiftAttributeRarityLegendary:
+						rarityStr = "Legendary"
+					case *tg.StarGiftAttributeRarityUncommon:
+						rarityStr = "Uncommon"
+					case *tg.StarGiftAttributeRarity:
+						rarityStr = fmt.Sprintf("%d‰", r.Permille)
+					}
+				}
+				info.Attributes = append(info.Attributes, models.StarGiftAttribute{
+					Name:    attr.Name,
+					Type:    "model",
+					Rarity:  rarityStr,
+					Crafted: attr.Crafted,
+				})
+				if doc, ok := attr.Document.(*tg.Document); ok {
+					for _, t := range doc.Thumbs {
+						if s, ok := t.(*tg.PhotoStrippedSize); ok {
+							info.ThumbURL = ExtractStrippedThumbURL(s.Bytes)
+						}
+					}
+				}
+			case *tg.StarGiftAttributePattern:
+				info.Symbol = attr.Name
+				info.Attributes = append(info.Attributes, models.StarGiftAttribute{
+					Name: attr.Name,
+					Type: "pattern",
+				})
+			case *tg.StarGiftAttributeBackdrop:
+				info.Backdrop = attr.Name
+				info.CenterColor = fmt.Sprintf("#%06X", attr.CenterColor)
+				info.EdgeColor = fmt.Sprintf("#%06X", attr.EdgeColor)
+				info.PatternColor = fmt.Sprintf("#%06X", attr.PatternColor)
+				info.TextColor = fmt.Sprintf("#%06X", attr.TextColor)
+				info.Attributes = append(info.Attributes, models.StarGiftAttribute{
+					Name:         attr.Name,
+					Type:         "backdrop",
+					CenterColor:  attr.CenterColor,
+					EdgeColor:    attr.EdgeColor,
+					PatternColor: attr.PatternColor,
+					TextColor:    attr.TextColor,
+				})
+			case *tg.StarGiftAttributeOriginalDetails:
+				if attr.Date > 0 {
+					info.Date = time.Unix(int64(attr.Date), 0)
+				}
+				if attr.Message.Text != "" {
+					info.Message = attr.Message.Text
+				}
+				if attr.SenderID != nil {
+					info.FromID = c.extractPeerID(attr.SenderID)
+				}
+				if attr.RecipientID != nil {
+					info.ToID = c.extractPeerID(attr.RecipientID)
+				}
+			}
+		}
+	}
+}
+
+// GetSavedStarGifts loads profile gifts for a peer (user or channel)
+func (c *ClientController) GetSavedStarGifts(ctx context.Context, peerID int64, offset string, limit int) ([]*models.StarGiftInfo, int, error) {
+	if c.api == nil {
+		return nil, 0, errors.New("client api not initialized")
+	}
+
+	normID, _ := NormalizeChatID(peerID)
+	inputPeer, err := c.resolveInputPeer(ctx, normID)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	if limit <= 0 {
+		limit = 30
+	}
+
+	res, err := c.api.PaymentsGetSavedStarGifts(ctx, &tg.PaymentsGetSavedStarGiftsRequest{
+		Peer:   inputPeer,
+		Offset: offset,
+		Limit:  limit,
+	})
+	if err != nil {
+		return nil, 0, errors.Wrap(err, "get saved star gifts")
+	}
+
+	var list []*models.StarGiftInfo
+	entities := tg.Entities{
+		Users: make(map[int64]*tg.User),
+		Chats: make(map[int64]*tg.Chat),
+	}
+	for _, uClass := range res.Users {
+		if u, ok := uClass.(*tg.User); ok {
+			entities.Users[u.ID] = u
+		}
+	}
+
+	for _, g := range res.Gifts {
+		info := &models.StarGiftInfo{
+			Date:         time.Unix(int64(g.Date), 0),
+			ConvertStars: g.ConvertStars,
+			CanExportAt:  g.CanExportAt,
+			CanTransfer:  g.CanTransferAt == 0 || g.CanTransferAt <= int(time.Now().Unix()),
+			Num:          g.GiftNum,
+		}
+		if g.Message.Text != "" {
+			info.Message = g.Message.Text
+		}
+		if g.FromID != nil {
+			info.FromID = c.extractPeerID(g.FromID)
+			if u, ok := entities.Users[info.FromID]; ok {
+				info.FromName = strings.TrimSpace(u.FirstName + " " + u.LastName)
+			}
+		}
+		if g.Gift != nil {
+			c.fillStarGiftClass(g.Gift, info)
+		}
+		list = append(list, info)
+	}
+
+	return list, res.Count, nil
+}
+
 

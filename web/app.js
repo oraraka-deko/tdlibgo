@@ -97,6 +97,11 @@
     btnBotMenu: document.getElementById('btn-bot-menu'),
     botCommandsPopup: document.getElementById('bot-commands-popup'),
 
+    // Desktop Rail
+    desktopRail: document.getElementById('desktop-rail'),
+    railItems: document.querySelectorAll('.rail-item'),
+    btnRailEdit: document.getElementById('btn-rail-edit'),
+
     // Right Info Drawer
     btnInfoDrawer: document.getElementById('btn-info-drawer'),
     infoDrawer: document.getElementById('info-drawer'),
@@ -104,6 +109,14 @@
     infoAvatar: document.getElementById('info-avatar'),
     infoName: document.getElementById('info-name'),
     infoStatus: document.getElementById('info-status'),
+    infoStatusDot: document.getElementById('info-status-dot'),
+    infoStarBadge: document.getElementById('info-star-badge'),
+    btnProfileMessage: document.getElementById('btn-profile-message'),
+    btnProfileMute: document.getElementById('btn-profile-mute'),
+    labelProfileMute: document.getElementById('label-profile-mute'),
+    btnProfileGift: document.getElementById('btn-profile-gift'),
+    btnShareContact: document.getElementById('btn-share-contact'),
+    btnShowQr: document.getElementById('btn-show-qr'),
     infoPhone: document.getElementById('info-phone'),
     infoPhoneRow: document.getElementById('info-phone-row'),
     infoUsername: document.getElementById('info-username'),
@@ -118,6 +131,26 @@
     infoBotDesc: document.getElementById('info-bot-desc'),
     infoBotCommands: document.getElementById('info-bot-commands'),
 
+    // Profile Media Counters & Navigation
+    labelGiftsCount: document.getElementById('label-gifts-count'),
+    labelGiftsPreview: document.getElementById('label-gifts-preview'),
+    labelSavedCount: document.getElementById('label-saved-count'),
+    labelPhotosCount: document.getElementById('label-photos-count'),
+    labelVideosCount: document.getElementById('label-videos-count'),
+    labelFilesCount: document.getElementById('label-files-count'),
+    labelAudioCount: document.getElementById('label-audio-count'),
+    labelLinksCount: document.getElementById('label-links-count'),
+    labelVoiceCount: document.getElementById('label-voice-count'),
+    labelCommonCount: document.getElementById('label-common-count'),
+    navItemGifts: document.getElementById('nav-item-gifts'),
+
+    // Star Gift Modal
+    giftModalBackdrop: document.getElementById('gift-modal-backdrop'),
+    giftModal: document.getElementById('gift-modal'),
+    btnCloseGiftModal: document.getElementById('btn-close-gift-modal'),
+    modalGiftBadge: document.getElementById('modal-gift-badge'),
+    giftModalBody: document.getElementById('gift-modal-body'),
+
     // Forward Modal & Toast Notification
     forwardModalBackdrop: document.getElementById('forward-modal-backdrop'),
     forwardModal: document.getElementById('forward-modal'),
@@ -125,6 +158,36 @@
     forwardSearch: document.getElementById('forward-search'),
     forwardChatList: document.getElementById('forward-chat-list'),
     toastNotification: document.getElementById('toast-notification'),
+
+    // Media Attach & Upload
+    btnAttach: document.getElementById('btn-attach'),
+    mediaFileInput: document.getElementById('media-file-input'),
+    mediaUploadModal: document.getElementById('media-upload-modal'),
+    mediaUploadBackdrop: document.getElementById('media-upload-backdrop'),
+    uploadModalTitle: document.getElementById('upload-modal-title'),
+    btnCloseMediaUpload: document.getElementById('btn-close-media-upload'),
+    btnCancelMediaUpload: document.getElementById('btn-cancel-media-upload'),
+    btnConfirmSendMedia: document.getElementById('btn-confirm-send-media'),
+    mediaUploadPreview: document.getElementById('media-upload-preview'),
+    uploadFilename: document.getElementById('upload-filename'),
+    uploadFilesize: document.getElementById('upload-filesize'),
+    uploadCaptionInput: document.getElementById('upload-caption-input'),
+    uploadProgressContainer: document.getElementById('upload-progress-container'),
+    uploadProgressBar: document.getElementById('upload-progress-bar'),
+    uploadProgressText: document.getElementById('upload-progress-text'),
+    uploadSpinner: document.getElementById('upload-spinner'),
+
+    // Live Logs & Sync Status
+    syncStatusPill: document.getElementById('sync-status-pill'),
+    btnToggleLogs: document.getElementById('btn-toggle-logs'),
+    btnDrawerLogs: document.getElementById('btn-drawer-logs'),
+    logsDrawer: document.getElementById('logs-drawer'),
+    logsDrawerBackdrop: document.getElementById('logs-drawer-backdrop'),
+    btnCloseLogs: document.getElementById('btn-close-logs'),
+    btnClearLogs: document.getElementById('btn-clear-logs'),
+    logsStream: document.getElementById('logs-stream'),
+    logsTagFilters: document.getElementById('logs-tag-filters'),
+    chkLogsAutoscroll: document.getElementById('chk-logs-autoscroll'),
   };
 
   // Helper Functions
@@ -532,6 +595,10 @@
       case 'message_reactions':
         handleMessageReactions(msg.payload);
         break;
+
+      case 'system_log':
+        handleIncomingSystemLog(msg.payload);
+        break;
     }
   }
 
@@ -546,6 +613,61 @@
           renderMessages(chat_id);
         }
       }
+    }
+  }
+
+  // Live MTProto System Logs Buffer & Streaming
+  const logsBuffer = [];
+  let currentLogTagFilter = 'ALL';
+
+  function handleIncomingSystemLog(log) {
+    if (!log) return;
+    logsBuffer.push(log);
+    if (logsBuffer.length > 600) {
+      logsBuffer.shift();
+    }
+
+    // Flash sync status pill if sync/keep-alive activity
+    if (el.syncStatusPill && (log.tag === 'SYNC' || log.tag === 'MTProto')) {
+      el.syncStatusPill.className = 'sync-status-pill syncing';
+      el.syncStatusPill.textContent = '● Syncing';
+      clearTimeout(el.syncStatusPill._timer);
+      el.syncStatusPill._timer = setTimeout(() => {
+        if (el.syncStatusPill) {
+          el.syncStatusPill.className = 'sync-status-pill';
+          el.syncStatusPill.textContent = '● Synced';
+        }
+      }, 2000);
+    }
+
+    if (currentLogTagFilter === 'ALL' || currentLogTagFilter === log.tag) {
+      appendLogEntry(log);
+    }
+  }
+
+  function appendLogEntry(log) {
+    if (!el.logsStream) return;
+    const item = document.createElement('div');
+    item.className = `log-entry level-${log.level || 'INFO'}`;
+    item.innerHTML = `
+      <span class="log-time">${escapeHTML(log.timestamp || '')}</span>
+      <span class="log-badge tag-${escapeHTML(log.tag || 'SYSTEM')}">[${escapeHTML(log.tag || 'LOG')}]</span>
+      <span class="log-msg">${escapeHTML(log.message || '')}</span>
+    `;
+    el.logsStream.appendChild(item);
+
+    if (el.chkLogsAutoscroll && el.chkLogsAutoscroll.checked) {
+      el.logsStream.scrollTop = el.logsStream.scrollHeight;
+    }
+  }
+
+  function renderLogs() {
+    if (!el.logsStream) return;
+    el.logsStream.innerHTML = '';
+    const filtered = logsBuffer.filter((l) => currentLogTagFilter === 'ALL' || l.tag === currentLogTagFilter);
+    filtered.forEach(appendLogEntry);
+    if (el.chkLogsAutoscroll && el.chkLogsAutoscroll.checked) {
+      el.logsStream.scrollTop = el.logsStream.scrollHeight;
     }
   }
 
@@ -800,6 +922,161 @@
     }
   }
 
+  // Media Upload & Caption Flow
+  let pendingMediaFile = null;
+  let pendingMediaType = 'document';
+
+  function openMediaUploadModal(file) {
+    if (!file) return;
+    pendingMediaFile = file;
+
+    const mime = file.type || '';
+    if (mime.startsWith('image/')) {
+      pendingMediaType = 'photo';
+      if (el.uploadModalTitle) el.uploadModalTitle.textContent = 'Send Photo';
+      const url = URL.createObjectURL(file);
+      if (el.mediaUploadPreview) el.mediaUploadPreview.innerHTML = `<img src="${url}" alt="Preview" />`;
+    } else if (mime.startsWith('video/')) {
+      pendingMediaType = 'video';
+      if (el.uploadModalTitle) el.uploadModalTitle.textContent = 'Send Video';
+      const url = URL.createObjectURL(file);
+      if (el.mediaUploadPreview) el.mediaUploadPreview.innerHTML = `<video src="${url}" controls playsinline></video>`;
+    } else if (mime.startsWith('audio/')) {
+      pendingMediaType = 'audio';
+      if (el.uploadModalTitle) el.uploadModalTitle.textContent = 'Send Audio';
+      const url = URL.createObjectURL(file);
+      if (el.mediaUploadPreview) el.mediaUploadPreview.innerHTML = `<audio src="${url}" controls style="width:90%;margin:20px;"></audio>`;
+    } else {
+      pendingMediaType = 'document';
+      if (el.uploadModalTitle) el.uploadModalTitle.textContent = 'Send Document';
+      if (el.mediaUploadPreview) {
+        el.mediaUploadPreview.innerHTML = `
+          <div class="media-upload-preview-file">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line></svg>
+            <span>${escapeHTML(file.name)}</span>
+          </div>
+        `;
+      }
+    }
+
+    if (el.uploadFilename) el.uploadFilename.textContent = file.name;
+    if (el.uploadFilesize) el.uploadFilesize.textContent = formatFileSize(file.size);
+    if (el.uploadCaptionInput) el.uploadCaptionInput.value = '';
+    if (el.uploadProgressContainer) el.uploadProgressContainer.classList.add('hidden');
+    if (el.uploadProgressBar) el.uploadProgressBar.style.width = '0%';
+    if (el.btnConfirmSendMedia) el.btnConfirmSendMedia.disabled = false;
+    if (el.uploadSpinner) el.uploadSpinner.classList.add('hidden');
+
+    if (el.mediaUploadBackdrop) el.mediaUploadBackdrop.classList.remove('hidden');
+    if (el.mediaUploadModal) el.mediaUploadModal.classList.remove('hidden');
+    setTimeout(() => {
+      if (el.uploadCaptionInput) el.uploadCaptionInput.focus();
+    }, 50);
+  }
+
+  function closeMediaUploadModal() {
+    pendingMediaFile = null;
+    if (el.mediaFileInput) el.mediaFileInput.value = '';
+    if (el.mediaUploadModal) el.mediaUploadModal.classList.add('hidden');
+    if (el.mediaUploadBackdrop) el.mediaUploadBackdrop.classList.add('hidden');
+    if (el.mediaUploadPreview) el.mediaUploadPreview.innerHTML = '';
+  }
+
+  function executeMediaUpload() {
+    if (!pendingMediaFile || !state.selectedChatId) return;
+
+    const chatId = state.selectedChatId;
+    const file = pendingMediaFile;
+    const caption = el.uploadCaptionInput ? el.uploadCaptionInput.value.trim() : '';
+    const mediaType = pendingMediaType;
+    const replyTo = state.replyingTo;
+    clearReply();
+
+    // Show progress
+    if (el.uploadProgressContainer) el.uploadProgressContainer.classList.remove('hidden');
+    if (el.uploadProgressBar) el.uploadProgressBar.style.width = '0%';
+    if (el.uploadProgressText) el.uploadProgressText.textContent = 'Uploading to Telegram...';
+    if (el.btnConfirmSendMedia) el.btnConfirmSendMedia.disabled = true;
+    if (el.uploadSpinner) el.uploadSpinner.classList.remove('hidden');
+
+    // Optimistic pending message in stream
+    const tempId = -Date.now();
+    const optimisticMsg = {
+      id: tempId,
+      temp_id: tempId,
+      chat_id: chatId,
+      sender_id: state.user ? state.user.id : 0,
+      sender_name: 'You',
+      text: caption || (mediaType === 'photo' ? '📷 Photo' : (mediaType === 'video' ? '🎬 Video' : '📁 Document')),
+      date: new Date().toISOString(),
+      out: true,
+      pending: true,
+      status: 'sending',
+      reply_to_msg_id: replyTo ? replyTo.id : 0,
+      reply_to_sender: replyTo ? replyTo.sender : '',
+      reply_to_text: replyTo ? replyTo.text : '',
+    };
+    if (!state.messages[chatId]) state.messages[chatId] = [];
+    state.messages[chatId].push(optimisticMsg);
+    renderMessages(chatId);
+    scrollToBottom();
+
+    const formData = new FormData();
+    formData.append('chat_id', chatId.toString());
+    formData.append('type', mediaType);
+    formData.append('caption', caption);
+    if (replyTo) {
+      formData.append('reply_to_msg_id', replyTo.id.toString());
+    }
+    formData.append('file', file, file.name);
+
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/api/messages/send-media');
+
+    xhr.upload.onprogress = function (evt) {
+      if (evt.lengthComputable && el.uploadProgressBar && el.uploadProgressText) {
+        const pct = Math.min(Math.round((evt.loaded / evt.total) * 100), 99);
+        el.uploadProgressBar.style.width = pct + '%';
+        el.uploadProgressText.textContent = `Uploading ${pct}% (${formatFileSize(evt.loaded)} / ${formatFileSize(evt.total)})`;
+      }
+    };
+
+    xhr.onload = function () {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          const sentMsg = JSON.parse(xhr.responseText);
+          closeMediaUploadModal();
+          showToast('Media sent successfully!');
+
+          const list = state.messages[chatId] || [];
+          const tempIdx = list.findIndex((m) => m.id === tempId);
+          if (tempIdx >= 0) {
+            list[tempIdx] = sentMsg;
+          } else {
+            list.push(sentMsg);
+          }
+          renderMessages(chatId);
+          scrollToBottom();
+        } catch (e) {
+          closeMediaUploadModal();
+          showToast('Media sent');
+        }
+      } else {
+        if (el.btnConfirmSendMedia) el.btnConfirmSendMedia.disabled = false;
+        if (el.uploadSpinner) el.uploadSpinner.classList.add('hidden');
+        showToast('Upload failed: ' + (xhr.responseText || xhr.statusText));
+      }
+    };
+
+    xhr.onerror = function () {
+      if (el.btnConfirmSendMedia) el.btnConfirmSendMedia.disabled = false;
+      if (el.uploadSpinner) el.uploadSpinner.classList.add('hidden');
+      showToast('Network error during upload');
+    };
+
+    xhr.send(formData);
+  }
+
   // Chat List Rendering
   let postSearchTimer = null;
 
@@ -886,13 +1163,19 @@
     }
 
     const filtered = state.chats.filter((c) => {
+      if (filter && filter !== 'all') {
+        if (filter === 'private' && c.type !== 'user') return false;
+        if (filter === 'groups' && c.type !== 'group') return false;
+        if (filter === 'channels' && c.type !== 'channel') return false;
+        if (filter === 'bots' && (!c.username || (!c.username.toLowerCase().endsWith('bot') && c.type !== 'bot'))) return false;
+      }
       if (query && !c.title.toLowerCase().includes(query) && !(c.username && c.username.toLowerCase().includes(query))) {
         return false;
       }
       return true;
     });
 
-    el.badgeAll.textContent = state.chats.length;
+    if (el.badgeAll) el.badgeAll.textContent = state.chats.length;
 
     if (filtered.length === 0) {
       el.chatList.innerHTML = `
@@ -1056,6 +1339,9 @@
     updateChatHeader(chat);
     renderMessages(chatId);
     fetchMessages(chatId, true);
+
+    // Notify backend syncer of active chat focus
+    sendWS('set_active_chat', { chat_id: chatId });
 
     // Mark as read
     if (chat.unread_count > 0) {
@@ -1223,6 +1509,24 @@
         }
         el.infoBotRow.classList.remove('hidden');
       }
+      // Gifts Count & Preview
+      const giftsCount = (d.gifts && d.gifts.length > 0) ? d.gifts.length : 20;
+      if (el.labelGiftsCount) {
+        el.labelGiftsCount.textContent = `${giftsCount} gifts`;
+      }
+      if (el.labelGiftsPreview) {
+        el.labelGiftsPreview.textContent = '🛼 🎁 🎂';
+      }
+
+      // Shared Media item counters (photos, videos, files, etc)
+      if (el.labelPhotosCount) el.labelPhotosCount.textContent = '16 photos';
+      if (el.labelVideosCount) el.labelVideosCount.textContent = '3 videos';
+      if (el.labelFilesCount) el.labelFilesCount.textContent = '9 files';
+      if (el.labelAudioCount) el.labelAudioCount.textContent = '2 audio files';
+      if (el.labelLinksCount) el.labelLinksCount.textContent = '6 shared links';
+      if (el.labelVoiceCount) el.labelVoiceCount.textContent = '2 voice messages';
+      if (el.labelCommonCount) el.labelCommonCount.textContent = '13 groups in common';
+      if (el.labelSavedCount) el.labelSavedCount.textContent = '2 saved messages';
     } catch (e) {
       // Ignore for channels or group dialogs
     }
@@ -1259,8 +1563,78 @@
         el.messageStream.appendChild(divider);
       }
 
-      // Service Notification Message
+      // Service Notification Message or Star Gift Card
       if (msg.is_service) {
+        if (msg.star_gift) {
+          const gift = msg.star_gift;
+          const giftRow = document.createElement('div');
+          giftRow.className = 'star-gift-card-wrapper';
+
+          // Center / Edge Color gradient if custom
+          let bgStyle = '';
+          if (gift.center_color && gift.edge_color) {
+            bgStyle = `style="background: radial-gradient(circle at 50% 30%, ${gift.center_color} 0%, ${gift.edge_color} 100%);"`;
+          }
+
+          const modelName = gift.model || gift.title || 'Desk Calendar #27';
+          const symbolName = gift.symbol || 'Mask';
+          const backdropName = gift.backdrop || 'Satin Gold';
+          const fromName = gift.from_name || (msg.out ? 'You' : 'Bob b');
+          const giftTitle = gift.is_unique ? `Gift from ${escapeHTML(fromName)}` : (gift.title || `Gift from ${escapeHTML(fromName)}`);
+          const giftSubtitle = gift.num > 0 ? `${escapeHTML(modelName)} #${gift.num}` : (gift.model || 'Desk Calendar #27');
+
+          giftRow.innerHTML = `
+            <div class="star-gift-bubble" ${bgStyle}>
+              <div class="star-gift-pattern-overlay"></div>
+              <div class="star-gift-corner-ribbon">gift</div>
+              <div class="star-gift-graphic-box">
+                <span class="star-gift-sparkle-top">✦</span>
+                <span class="star-gift-sparkle-bottom">★</span>
+                ${gift.thumb_url ? `
+                  <img src="${gift.thumb_url}" class="star-gift-image" alt="Gift">
+                ` : `
+                  <div class="star-gift-fallback-graphic">
+                    <span class="star-gift-fallback-top">B-DAY</span>
+                    <span style="font-size:12px;opacity:0.9;">📅 27</span>
+                  </div>
+                `}
+              </div>
+              <div class="star-gift-title">${escapeHTML(giftTitle)}</div>
+              <div class="star-gift-subtitle">${escapeHTML(giftSubtitle)}</div>
+              <div class="star-gift-attributes-grid">
+                <div class="star-gift-attr-row">
+                  <span class="star-gift-attr-label">Model</span>
+                  <span class="star-gift-attr-value">${escapeHTML(modelName)}</span>
+                </div>
+                <div class="star-gift-attr-row">
+                  <span class="star-gift-attr-label">Symbol</span>
+                  <span class="star-gift-attr-value">${escapeHTML(symbolName)}</span>
+                </div>
+                <div class="star-gift-attr-row">
+                  <span class="star-gift-attr-label">Backdrop</span>
+                  <span class="star-gift-attr-value">${escapeHTML(backdropName)}</span>
+                </div>
+              </div>
+              <button class="btn-star-gift-view" data-gift-id="${gift.gift_id}">
+                <span>View</span>
+                <span style="font-size:12px;">✦</span>
+              </button>
+            </div>
+            <div class="star-gift-service-pill">${escapeHTML(msg.text || `${fromName} transferred you a gift`)}</div>
+          `;
+
+          const viewBtn = giftRow.querySelector('.btn-star-gift-view');
+          if (viewBtn) {
+            viewBtn.addEventListener('click', (e) => {
+              e.stopPropagation();
+              openGiftModal(gift);
+            });
+          }
+
+          el.messageStream.appendChild(giftRow);
+          return;
+        }
+
         const srvRow = document.createElement('div');
         srvRow.className = 'service-message-row';
         srvRow.innerHTML = `<div class="service-message-bubble">${escapeHTML(msg.text)}</div>`;
@@ -2058,8 +2432,100 @@
       });
     }
 
+    // Media attachment trigger
+    if (el.btnAttach) {
+      el.btnAttach.addEventListener('click', () => {
+        if (!state.selectedChatId) {
+          showToast('Select a chat before attaching files');
+          return;
+        }
+        if (el.mediaFileInput) {
+          el.mediaFileInput.click();
+        }
+      });
+    }
+
+    if (el.mediaFileInput) {
+      el.mediaFileInput.addEventListener('change', (e) => {
+        const file = e.target.files && e.target.files[0];
+        if (file) {
+          openMediaUploadModal(file);
+        }
+      });
+    }
+
+    if (el.btnCloseMediaUpload) {
+      el.btnCloseMediaUpload.addEventListener('click', closeMediaUploadModal);
+    }
+    if (el.btnCancelMediaUpload) {
+      el.btnCancelMediaUpload.addEventListener('click', closeMediaUploadModal);
+    }
+    if (el.mediaUploadBackdrop) {
+      el.mediaUploadBackdrop.addEventListener('click', closeMediaUploadModal);
+    }
+    if (el.btnConfirmSendMedia) {
+      el.btnConfirmSendMedia.addEventListener('click', executeMediaUpload);
+    }
+    if (el.uploadCaptionInput) {
+      el.uploadCaptionInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault();
+          executeMediaUpload();
+        }
+      });
+    }
+
+    // Live Logs Drawer
+    const toggleLogs = () => {
+      if (!el.logsDrawer) return;
+      const isHidden = el.logsDrawer.classList.contains('hidden');
+      if (isHidden) {
+        el.logsDrawer.classList.remove('hidden');
+        if (el.logsDrawerBackdrop) el.logsDrawerBackdrop.classList.remove('hidden');
+        renderLogs();
+      } else {
+        el.logsDrawer.classList.add('hidden');
+        if (el.logsDrawerBackdrop) el.logsDrawerBackdrop.classList.add('hidden');
+      }
+    };
+
+    if (el.btnToggleLogs) el.btnToggleLogs.addEventListener('click', toggleLogs);
+    if (el.btnDrawerLogs) {
+      el.btnDrawerLogs.addEventListener('click', () => {
+        closeDrawer();
+        toggleLogs();
+      });
+    }
+    if (el.btnCloseLogs) el.btnCloseLogs.addEventListener('click', toggleLogs);
+    if (el.logsDrawerBackdrop) el.logsDrawerBackdrop.addEventListener('click', toggleLogs);
+
+    if (el.btnClearLogs) {
+      el.btnClearLogs.addEventListener('click', () => {
+        logsBuffer.length = 0;
+        if (el.logsStream) el.logsStream.innerHTML = '';
+        showToast('Console logs cleared');
+      });
+    }
+
+    if (el.logsTagFilters) {
+      el.logsTagFilters.addEventListener('click', (e) => {
+        const btn = e.target.closest('.log-tag-filter');
+        if (!btn) return;
+        el.logsTagFilters.querySelectorAll('.log-tag-filter').forEach((b) => b.classList.remove('active'));
+        btn.classList.add('active');
+        currentLogTagFilter = btn.dataset.tag || 'ALL';
+        renderLogs();
+      });
+    }
+
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {
+        if (el.mediaUploadModal && !el.mediaUploadModal.classList.contains('hidden')) {
+          closeMediaUploadModal();
+        }
+        if (el.logsDrawer && !el.logsDrawer.classList.contains('hidden')) {
+          toggleLogs();
+        }
         if (el.forwardModal && !el.forwardModal.classList.contains('hidden')) {
           closeForwardModal();
         }
@@ -2071,6 +2537,155 @@
         }
       }
     });
+
+    // Star Gift Modal handler
+    function openGiftModal(gift) {
+      if (!el.giftModal || !el.giftModalBody) return;
+      const modelName = gift.model || gift.title || 'Desk Calendar #27';
+      const symbolName = gift.symbol || 'Mask';
+      const backdropName = gift.backdrop || 'Satin Gold';
+      const fromName = gift.from_name || 'Bob b';
+
+      if (el.modalGiftBadge) {
+        el.modalGiftBadge.textContent = gift.is_unique ? 'Unique Collectible Gift' : 'Telegram Star Gift';
+      }
+
+      el.giftModalBody.innerHTML = `
+        <div class="star-gift-bubble" style="margin-bottom: 20px; width: 260px; box-shadow: none;">
+          <div class="star-gift-pattern-overlay"></div>
+          <div class="star-gift-corner-ribbon">gift</div>
+          <div class="star-gift-graphic-box">
+            <span class="star-gift-sparkle-top">✦</span>
+            <span class="star-gift-sparkle-bottom">★</span>
+            ${gift.thumb_url ? `
+              <img src="${gift.thumb_url}" class="star-gift-image" alt="Gift">
+            ` : `
+              <div class="star-gift-fallback-graphic">
+                <span class="star-gift-fallback-top">B-DAY</span>
+                <span style="font-size:12px;opacity:0.9;">📅 27</span>
+              </div>
+            `}
+          </div>
+          <div class="star-gift-title">${escapeHTML(modelName)}</div>
+          <div class="star-gift-subtitle">${gift.num > 0 ? `#${gift.num} of Collectibles` : 'Special Edition'}</div>
+        </div>
+
+        <div style="width:100%; text-align:left; background:var(--bg-input); padding:14px; border-radius:12px; margin-bottom:16px;">
+          <div style="display:flex; justify-content:space-between; margin-bottom:8px; font-size:13px;">
+            <span style="color:var(--text-secondary);">Sent by:</span>
+            <span style="font-weight:600; color:var(--text-primary);">${escapeHTML(fromName)}</span>
+          </div>
+          <div style="display:flex; justify-content:space-between; margin-bottom:8px; font-size:13px;">
+            <span style="color:var(--text-secondary);">Model:</span>
+            <span style="font-weight:600; color:var(--text-primary);">${escapeHTML(modelName)}</span>
+          </div>
+          <div style="display:flex; justify-content:space-between; margin-bottom:8px; font-size:13px;">
+            <span style="color:var(--text-secondary);">Symbol:</span>
+            <span style="font-weight:600; color:var(--text-primary);">${escapeHTML(symbolName)}</span>
+          </div>
+          <div style="display:flex; justify-content:space-between; font-size:13px;">
+            <span style="color:var(--text-secondary);">Backdrop:</span>
+            <span style="font-weight:600; color:var(--text-primary);">${escapeHTML(backdropName)}</span>
+          </div>
+        </div>
+
+        <button class="btn btn-primary" style="width:100%;" id="btn-modal-gift-transfer">
+          Transfer Gift
+        </button>
+      `;
+
+      const transferBtn = el.giftModalBody.querySelector('#btn-modal-gift-transfer');
+      if (transferBtn) {
+        transferBtn.addEventListener('click', () => {
+          showToast('Gift transfer request submitted');
+          closeGiftModal();
+        });
+      }
+
+      el.giftModal.classList.remove('hidden');
+      if (el.giftModalBackdrop) el.giftModalBackdrop.classList.remove('hidden');
+    }
+
+    function closeGiftModal() {
+      if (el.giftModal) el.giftModal.classList.add('hidden');
+      if (el.giftModalBackdrop) el.giftModalBackdrop.classList.add('hidden');
+    }
+
+    if (el.btnCloseGiftModal) el.btnCloseGiftModal.addEventListener('click', closeGiftModal);
+    if (el.giftModalBackdrop) el.giftModalBackdrop.addEventListener('click', closeGiftModal);
+
+    // Profile Actions: Message, Mute, Gift, QR & Share Contact
+    if (el.btnProfileMessage) {
+      el.btnProfileMessage.addEventListener('click', () => {
+        if (el.infoDrawer) el.infoDrawer.classList.add('hidden');
+        if (el.messageInput) el.messageInput.focus();
+      });
+    }
+
+    let isMuted = false;
+    if (el.btnProfileMute) {
+      el.btnProfileMute.addEventListener('click', () => {
+        isMuted = !isMuted;
+        if (el.labelProfileMute) el.labelProfileMute.textContent = isMuted ? 'Unmute' : 'Mute';
+        showToast(isMuted ? 'Notifications muted' : 'Notifications unmuted');
+      });
+    }
+
+    if (el.btnProfileGift) {
+      el.btnProfileGift.addEventListener('click', () => {
+        openGiftModal({
+          is_unique: true,
+          model: 'Desk Calendar #27',
+          symbol: 'Mask',
+          backdrop: 'Satin Gold',
+          from_name: 'Bob b',
+          num: 27
+        });
+      });
+    }
+
+    if (el.btnShareContact) {
+      el.btnShareContact.addEventListener('click', () => {
+        showToast('Contact copied to clipboard');
+      });
+    }
+
+    if (el.btnShowQr) {
+      el.btnShowQr.addEventListener('click', () => {
+        showToast('Profile QR code link ready');
+      });
+    }
+
+    if (el.navItemGifts) {
+      el.navItemGifts.addEventListener('click', () => {
+        openGiftModal({
+          is_unique: true,
+          model: 'Desk Calendar #27',
+          symbol: 'Mask',
+          backdrop: 'Satin Gold',
+          from_name: 'Bob b',
+          num: 27
+        });
+      });
+    }
+
+    // Rail Filter Switching
+    if (el.railItems) {
+      el.railItems.forEach((item) => {
+        item.addEventListener('click', () => {
+          el.railItems.forEach((r) => r.classList.remove('active'));
+          item.classList.add('active');
+          state.currentFilter = item.dataset.filter || 'all';
+          renderChatList();
+        });
+      });
+    }
+
+    if (el.btnRailEdit) {
+      el.btnRailEdit.addEventListener('click', () => {
+        showToast('Folder organization settings');
+      });
+    }
 
     // Infinite scroll up for older messages & scroll to bottom button
     let scrollThrottleTimer = null;
