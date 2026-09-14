@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -330,4 +331,145 @@ func (h *HistoryDB) CountMessages(chatID int64) (int, error) {
 	})
 
 	return count, err
+}
+
+// SearchMessages performs full text and media search across indexed messages.
+func (h *HistoryDB) SearchMessages(query string, chatID int64, mediaOnly bool, limit int) ([]*models.Message, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	queryLower := strings.ToLower(strings.TrimSpace(query))
+	var results []*models.Message
+
+	err := h.db.View(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(bucketMessages)
+		c := b.Cursor()
+
+		var prefix []byte
+		if chatID != 0 {
+			prefix = chatPrefix(chatID)
+		}
+
+		for k, v := c.First(); k != nil; k, v = c.Next() {
+			if prefix != nil && !bytes.HasPrefix(k, prefix) {
+				continue
+			}
+
+			var m models.Message
+			if err := json.Unmarshal(v, &m); err != nil {
+				continue
+			}
+
+			if mediaOnly && m.Media == nil {
+				continue
+			}
+
+			if queryLower != "" {
+				textMatch := strings.Contains(strings.ToLower(m.Text), queryLower)
+				senderMatch := strings.Contains(strings.ToLower(m.SenderName), queryLower)
+				mediaMatch := false
+				if m.Media != nil {
+					mediaMatch = strings.Contains(strings.ToLower(m.Media.FileName), queryLower) ||
+						strings.Contains(strings.ToLower(m.Media.MimeType), queryLower)
+				}
+
+				if !textMatch && !senderMatch && !mediaMatch {
+					continue
+				}
+			}
+
+			results = append(results, &m)
+			if len(results) >= limit {
+				break
+			}
+		}
+		return nil
+	})
+
+	return results, err
+}
+
+// GetAllMessagesForChat retrieves all messages stored for a specific chat, ordered by ID ascending.
+func (h *HistoryDB) GetAllMessagesForChat(chatID int64) ([]*models.Message, error) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	prefix := chatPrefix(chatID)
+	var messages []*models.Message
+
+	err := h.db.View(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(bucketMessages)
+		c := b.Cursor()
+		for k, v := c.Seek(prefix); k != nil && bytes.HasPrefix(k, prefix); k, v = c.Next() {
+			var m models.Message
+			if err := json.Unmarshal(v, &m); err == nil {
+				messages = append(messages, &m)
+			}
+		}
+		return nil
+	})
+
+	return messages, err
+}
+
+// GetStats returns database statistics: chat count, total messages count, and file size on disk.
+func (h *HistoryDB) GetStats() (chatCount int, messageCount int, dbSize int64, err error) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	err = h.db.View(func(tx *bbolt.Tx) error {
+		bChats := tx.Bucket(bucketChats)
+		if bChats != nil {
+			chatCount = bChats.Stats().KeyN
+		}
+		bMsgs := tx.Bucket(bucketMessages)
+		if bMsgs != nil {
+			messageCount = bMsgs.Stats().KeyN
+		}
+		dbSize = tx.Size()
+		return nil
+	})
+
+	return chatCount, messageCount, dbSize, err
+}
+
+// ClearChatMessages deletes all stored messages for a specific chat.
+func (h *HistoryDB) ClearChatMessages(chatID int64) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	prefix := chatPrefix(chatID)
+	return h.db.Update(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(bucketMessages)
+		c := b.Cursor()
+		var keysToDelete [][]byte
+		for k, _ := c.Seek(prefix); k != nil && bytes.HasPrefix(k, prefix); k, _ = c.Next() {
+			keyCopy := make([]byte, len(k))
+			copy(keyCopy, k)
+			keysToDelete = append(keysToDelete, keyCopy)
+		}
+		for _, k := range keysToDelete {
+			if err := b.Delete(k); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// ClearAllMessages purges all stored messages.
+func (h *HistoryDB) ClearAllMessages() error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	return h.db.Update(func(tx *bbolt.Tx) error {
+		if err := tx.DeleteBucket(bucketMessages); err != nil {
+			return err
+		}
+		_, err := tx.CreateBucket(bucketMessages)
+		return err
+	})
 }

@@ -59,6 +59,28 @@
     themeText: document.getElementById('theme-text'),
     btnLogout: document.getElementById('btn-logout'),
 
+    // TDL Power Suite
+    btnDrawerDownloader: document.getElementById('btn-drawer-downloader'),
+    btnDrawerUploader: document.getElementById('btn-drawer-uploader'),
+    btnDrawerIndexer: document.getElementById('btn-drawer-indexer'),
+    btnDrawerMediaHub: document.getElementById('btn-drawer-mediahub'),
+
+    batchDlModal: document.getElementById('batch-dl-modal'),
+    batchDlBackdrop: document.getElementById('batch-dl-backdrop'),
+    btnCloseBatchDl: document.getElementById('btn-close-batch-dl'),
+
+    multiUpModal: document.getElementById('multi-up-modal'),
+    multiUpBackdrop: document.getElementById('multi-up-backdrop'),
+    btnCloseMultiUp: document.getElementById('btn-close-multi-up'),
+
+    indexerModal: document.getElementById('indexer-modal'),
+    indexerBackdrop: document.getElementById('indexer-backdrop'),
+    btnCloseIndexer: document.getElementById('btn-close-indexer'),
+
+    mediaHubModal: document.getElementById('mediahub-modal'),
+    mediaHubBackdrop: document.getElementById('mediahub-backdrop'),
+    btnCloseMediaHub: document.getElementById('btn-close-mediahub'),
+
     // Active Chat
     noChatState: document.getElementById('no-chat-state'),
     activeChatContent: document.getElementById('active-chat-content'),
@@ -598,6 +620,18 @@
 
       case 'system_log':
         handleIncomingSystemLog(msg.payload);
+        break;
+
+      case 'download_progress':
+        handleDownloadProgressWS(msg.payload);
+        break;
+
+      case 'upload_progress':
+        handleUploadProgressWS(msg.payload);
+        break;
+
+      case 'indexer_progress':
+        handleIndexerProgressWS(msg.payload);
         break;
     }
   }
@@ -2706,6 +2740,985 @@
     });
 
     el.btnScrollBottom.addEventListener('click', scrollToBottom);
+
+    // =========================================================================
+    // TDL POWER SUITE INITIALIZATION & EVENT HANDLERS
+    // =========================================================================
+
+    initTDLPowerSuite();
+  }
+
+  // =========================================================================
+  // TDL POWER SUITE MODULES
+  // =========================================================================
+
+  let activeUploadFile = null;
+
+  function openPowerModal(modal, backdrop) {
+    if (el.menuDrawer) el.menuDrawer.classList.add('hidden');
+    if (el.menuDrawerBackdrop) el.menuDrawerBackdrop.classList.add('hidden');
+    if (backdrop) backdrop.classList.remove('hidden');
+    if (modal) modal.classList.remove('hidden');
+    populateChatSelects();
+  }
+
+  function closePowerModal(modal, backdrop) {
+    if (modal) modal.classList.add('hidden');
+    if (backdrop) backdrop.classList.add('hidden');
+  }
+
+  function populateChatSelects() {
+    const selects = [
+      document.getElementById('dl-chat-select'),
+      document.getElementById('up-chat-select'),
+      document.getElementById('idx-chat-select'),
+      document.getElementById('idx-search-chat'),
+      document.getElementById('idx-export-chat-select'),
+      document.getElementById('hub-chat-select'),
+    ];
+
+    selects.forEach((sel) => {
+      if (!sel) return;
+      const isSearch = sel.id === 'idx-search-chat';
+      const prevVal = sel.value;
+      sel.innerHTML = '';
+      if (isSearch) {
+        const opt = document.createElement('option');
+        opt.value = '0';
+        opt.textContent = 'All Indexed Chats';
+        sel.appendChild(opt);
+      }
+      state.chats.forEach((chat) => {
+        const opt = document.createElement('option');
+        opt.value = chat.id;
+        opt.textContent = `${chat.title || 'Untitled'} (${chat.type || 'chat'})`;
+        sel.appendChild(opt);
+      });
+      if (prevVal) {
+        sel.value = prevVal;
+      } else if (state.selectedChatId && !isSearch) {
+        sel.value = state.selectedChatId;
+      }
+    });
+  }
+
+  function formatBytes(bytes) {
+    if (!bytes || bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  }
+
+  function formatSpeed(bytesPerSec) {
+    if (!bytesPerSec || bytesPerSec === 0) return '0 KB/s';
+    return formatBytes(bytesPerSec) + '/s';
+  }
+
+  function initTDLPowerSuite() {
+    // 1. Drawer Button Open Handlers
+    if (el.btnDrawerDownloader) {
+      el.btnDrawerDownloader.addEventListener('click', () => {
+        openPowerModal(el.batchDlModal, el.batchDlBackdrop);
+        loadDownloadTasks();
+      });
+    }
+    if (el.btnCloseBatchDl) {
+      el.btnCloseBatchDl.addEventListener('click', () => closePowerModal(el.batchDlModal, el.batchDlBackdrop));
+    }
+    if (el.batchDlBackdrop) {
+      el.batchDlBackdrop.addEventListener('click', () => closePowerModal(el.batchDlModal, el.batchDlBackdrop));
+    }
+
+    if (el.btnDrawerUploader) {
+      el.btnDrawerUploader.addEventListener('click', () => {
+        openPowerModal(el.multiUpModal, el.multiUpBackdrop);
+        loadUploadTasks();
+      });
+    }
+    if (el.btnCloseMultiUp) {
+      el.btnCloseMultiUp.addEventListener('click', () => closePowerModal(el.multiUpModal, el.multiUpBackdrop));
+    }
+    if (el.multiUpBackdrop) {
+      el.multiUpBackdrop.addEventListener('click', () => closePowerModal(el.multiUpModal, el.multiUpBackdrop));
+    }
+
+    if (el.btnDrawerIndexer) {
+      el.btnDrawerIndexer.addEventListener('click', () => {
+        openPowerModal(el.indexerModal, el.indexerBackdrop);
+        loadCacheStats();
+      });
+    }
+    if (el.btnCloseIndexer) {
+      el.btnCloseIndexer.addEventListener('click', () => closePowerModal(el.indexerModal, el.indexerBackdrop));
+    }
+    if (el.indexerBackdrop) {
+      el.indexerBackdrop.addEventListener('click', () => closePowerModal(el.indexerModal, el.indexerBackdrop));
+    }
+
+    if (el.btnDrawerMediaHub) {
+      el.btnDrawerMediaHub.addEventListener('click', () => {
+        openPowerModal(el.mediaHubModal, el.mediaHubBackdrop);
+      });
+    }
+    if (el.btnCloseMediaHub) {
+      el.btnCloseMediaHub.addEventListener('click', () => closePowerModal(el.mediaHubModal, el.mediaHubBackdrop));
+    }
+    if (el.mediaHubBackdrop) {
+      el.mediaHubBackdrop.addEventListener('click', () => closePowerModal(el.mediaHubModal, el.mediaHubBackdrop));
+    }
+
+    // 2. Setup Power Modal Tabs
+    document.querySelectorAll('.power-modal').forEach((modal) => {
+      const tabs = modal.querySelectorAll('.power-tab');
+      tabs.forEach((tab) => {
+        tab.addEventListener('click', () => {
+          tabs.forEach((t) => t.classList.remove('active'));
+          tab.classList.add('active');
+          const targetPaneId = `tab-${tab.dataset.tab}`;
+          modal.querySelectorAll('.power-tab-pane').forEach((pane) => {
+            pane.classList.remove('active');
+          });
+          const targetPane = modal.querySelector(`#${targetPaneId}`);
+          if (targetPane) targetPane.classList.add('active');
+        });
+      });
+    });
+
+    // 3. Setup Downloader Controller
+    setupBatchDownloader();
+
+    // 4. Setup Uploader Controller
+    setupMultiUploader();
+
+    // 5. Setup Indexer & Cacher Controller
+    setupIndexer();
+
+    // 6. Setup Media Hub Controller
+    setupMediaHub();
+  }
+
+  // --- Downloader Controller ---
+  function setupBatchDownloader() {
+    const btnModeChat = document.getElementById('btn-dl-mode-chat');
+    const btnModeURL = document.getElementById('btn-dl-mode-url');
+    const formChat = document.getElementById('dl-form-chat');
+    const formURL = document.getElementById('dl-form-url');
+    const btnStart = document.getElementById('btn-start-batch-dl');
+    const spinner = document.getElementById('dl-start-spinner');
+
+    let currentSourceMode = 'chat';
+
+    if (btnModeChat && btnModeURL) {
+      btnModeChat.addEventListener('click', () => {
+        btnModeChat.classList.add('active');
+        btnModeURL.classList.remove('active');
+        formChat.classList.remove('hidden');
+        formURL.classList.add('hidden');
+        currentSourceMode = 'chat';
+      });
+      btnModeURL.addEventListener('click', () => {
+        btnModeURL.classList.add('active');
+        btnModeChat.classList.remove('active');
+        formURL.classList.remove('hidden');
+        formChat.classList.add('hidden');
+        currentSourceMode = 'url';
+      });
+    }
+
+    if (btnStart) {
+      btnStart.addEventListener('click', async () => {
+        btnStart.disabled = true;
+        if (spinner) spinner.classList.remove('hidden');
+
+        try {
+          let payload = {};
+          const outDir = document.getElementById('dl-output-dir').value.trim() || 'downloads';
+          const threads = parseInt(document.getElementById('dl-threads-input').value, 10) || 4;
+
+          if (currentSourceMode === 'url') {
+            const rawUrls = document.getElementById('dl-urls-input').value.trim();
+            const urls = rawUrls.split('\n').map(u => u.trim()).filter(u => u.length > 0);
+            if (urls.length === 0) {
+              showToast('Please enter at least one Telegram link');
+              return;
+            }
+            payload = {
+              urls: urls,
+              output_dir: outDir,
+              threads: threads
+            };
+          } else {
+            const chatID = parseInt(document.getElementById('dl-chat-select').value, 10);
+            if (!chatID) {
+              showToast('Please select a target chat');
+              return;
+            }
+            const startMsg = parseInt(document.getElementById('dl-start-msg').value, 10) || 0;
+            const endMsg = parseInt(document.getElementById('dl-end-msg').value, 10) || 0;
+            const filter = document.getElementById('dl-filter-select').value;
+            const limit = parseInt(document.getElementById('dl-limit-input').value, 10) || 100;
+
+            payload = {
+              chat_id: chatID,
+              start_msg_id: startMsg,
+              end_msg_id: endMsg,
+              filter: filter,
+              limit: limit,
+              output_dir: outDir,
+              threads: threads
+            };
+          }
+
+          const res = await fetch('/api/downloader/start', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.error || 'Failed to start download');
+          }
+
+          const task = await res.json();
+          showToast('Batch download task started!');
+
+          // Switch to active queue tab
+          const queueTab = el.batchDlModal.querySelector('.power-tab[data-tab="dl-queue"]');
+          if (queueTab) queueTab.click();
+
+          loadDownloadTasks();
+        } catch (e) {
+          showToast('Error: ' + e.message);
+        } finally {
+          btnStart.disabled = false;
+          if (spinner) spinner.classList.add('hidden');
+        }
+      });
+    }
+  }
+
+  async function loadDownloadTasks() {
+    try {
+      const res = await fetch('/api/downloader/tasks');
+      if (!res.ok) return;
+      const data = await res.json();
+      renderDownloadTasks(data.tasks || []);
+    } catch (e) {
+      console.error('Failed to load download tasks:', e);
+    }
+  }
+
+  function renderDownloadTasks(tasks) {
+    const queueList = document.getElementById('dl-queue-list');
+    const compList = document.getElementById('dl-completed-list');
+    const queueCountBadge = document.getElementById('dl-queue-count');
+
+    if (!queueList || !compList) return;
+
+    const activeTasks = tasks.filter(t => t.status !== 'completed' && t.status !== 'cancelled');
+    const compTasks = tasks.filter(t => t.status === 'completed');
+
+    if (queueCountBadge) queueCountBadge.textContent = activeTasks.length;
+
+    if (activeTasks.length === 0) {
+      queueList.innerHTML = '<div class="power-empty-state">No active download tasks. Start one from the New Download tab!</div>';
+    } else {
+      queueList.innerHTML = '';
+      activeTasks.forEach(task => queueList.appendChild(createDownloadTaskCard(task)));
+    }
+
+    if (compTasks.length === 0) {
+      compList.innerHTML = '<div class="power-empty-state">No completed downloads yet.</div>';
+    } else {
+      compList.innerHTML = '';
+      compTasks.forEach(task => compList.appendChild(createDownloadTaskCard(task)));
+    }
+  }
+
+  function createDownloadTaskCard(task) {
+    const card = document.createElement('div');
+    card.className = 'power-task-card';
+    card.id = `dl-task-${task.id}`;
+
+    const percent = task.total_bytes > 0
+      ? Math.min(100, Math.round((task.downloaded_bytes / task.total_bytes) * 100))
+      : (task.total_items > 0 ? Math.round((task.completed_items / task.total_items) * 100) : 0);
+
+    const statusBadgeClass = task.status === 'downloading'
+      ? 'badge-connected'
+      : (task.status === 'completed' ? 'badge-connected' : 'badge-connecting');
+
+    card.innerHTML = `
+      <div class="power-task-title-row">
+        <span class="power-task-title">${task.title}</span>
+        <span class="badge ${statusBadgeClass}">${task.status.toUpperCase()}</span>
+      </div>
+      <div class="power-progress-bar-wrap">
+        <div class="power-progress-bar" style="width: ${percent}%;"></div>
+      </div>
+      <div class="power-task-meta-row">
+        <span>${formatBytes(task.downloaded_bytes)} / ${formatBytes(task.total_bytes)} (${percent}%)</span>
+        <span>⚡ ${formatSpeed(task.speed)}</span>
+        <span>${task.completed_items} / ${task.total_items} files</span>
+        <div class="power-task-actions">
+          ${task.status === 'downloading' ? `<button class="power-btn-sm btn-dl-pause" data-id="${task.id}">Pause</button>` : ''}
+          ${task.status === 'paused' || task.status === 'failed' ? `<button class="power-btn-sm btn-dl-resume" data-id="${task.id}">Resume</button>` : ''}
+          ${task.status !== 'completed' ? `<button class="power-btn-sm text-danger btn-dl-cancel" data-id="${task.id}">Cancel</button>` : ''}
+          <button class="power-btn-sm text-danger btn-dl-del" data-id="${task.id}">✕</button>
+        </div>
+      </div>
+    `;
+
+    // Action clicks
+    card.querySelector('.btn-dl-pause')?.addEventListener('click', async () => {
+      await fetch('/api/downloader/pause', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ task_id: task.id })
+      });
+      loadDownloadTasks();
+    });
+
+    card.querySelector('.btn-dl-resume')?.addEventListener('click', async () => {
+      await fetch('/api/downloader/resume', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ task_id: task.id })
+      });
+      loadDownloadTasks();
+    });
+
+    card.querySelector('.btn-dl-cancel')?.addEventListener('click', async () => {
+      await fetch('/api/downloader/cancel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ task_id: task.id })
+      });
+      loadDownloadTasks();
+    });
+
+    card.querySelector('.btn-dl-del')?.addEventListener('click', async () => {
+      await fetch('/api/downloader/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ task_id: task.id })
+      });
+      loadDownloadTasks();
+    });
+
+    return card;
+  }
+
+  function handleDownloadProgressWS(task) {
+    if (!task) return;
+    const existing = document.getElementById(`dl-task-${task.id}`);
+    if (existing) {
+      const isCompleted = task.status === 'completed';
+      const percent = isCompleted
+        ? 100
+        : (task.total_bytes > 0
+            ? Math.min(100, Math.round((task.downloaded_bytes / task.total_bytes) * 100))
+            : (task.total_items > 0 ? Math.round((task.completed_items / task.total_items) * 100) : 0));
+
+      const badge = existing.querySelector('.power-task-title-row .badge');
+      if (badge) {
+        badge.textContent = task.status.toUpperCase();
+        badge.className = `badge ${task.status === 'completed' || task.status === 'downloading' ? 'badge-connected' : 'badge-connecting'}`;
+      }
+
+      const pBar = existing.querySelector('.power-progress-bar');
+      if (pBar) pBar.style.width = `${percent}%`;
+
+      const meta = existing.querySelector('.power-task-meta-row');
+      if (meta) {
+        const dlBytes = isCompleted ? task.total_bytes : task.downloaded_bytes;
+        const compFiles = isCompleted ? task.total_items : task.completed_items;
+        const curSpeed = isCompleted ? 0 : task.speed;
+        meta.innerHTML = `
+          <span>${formatBytes(dlBytes)} / ${formatBytes(task.total_bytes)} (${percent}%)</span>
+          <span>⚡ ${formatSpeed(curSpeed)}</span>
+          <span>${compFiles} / ${task.total_items} files</span>
+          <div class="power-task-actions">
+            ${task.status === 'downloading' ? `<button class="power-btn-sm btn-dl-pause" data-id="${task.id}">Pause</button>` : ''}
+            ${task.status === 'paused' || task.status === 'failed' ? `<button class="power-btn-sm btn-dl-resume" data-id="${task.id}">Resume</button>` : ''}
+            ${task.status !== 'completed' ? `<button class="power-btn-sm text-danger btn-dl-cancel" data-id="${task.id}">Cancel</button>` : ''}
+            <button class="power-btn-sm text-danger btn-dl-del" data-id="${task.id}">✕</button>
+          </div>
+        `;
+
+        existing.querySelector('.btn-dl-pause')?.addEventListener('click', async () => {
+          await fetch('/api/downloader/pause', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ task_id: task.id })
+          });
+          loadDownloadTasks();
+        });
+        existing.querySelector('.btn-dl-resume')?.addEventListener('click', async () => {
+          await fetch('/api/downloader/resume', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ task_id: task.id })
+          });
+          loadDownloadTasks();
+        });
+        existing.querySelector('.btn-dl-cancel')?.addEventListener('click', async () => {
+          await fetch('/api/downloader/cancel', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ task_id: task.id })
+          });
+          loadDownloadTasks();
+        });
+        existing.querySelector('.btn-dl-del')?.addEventListener('click', async () => {
+          await fetch('/api/downloader/delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ task_id: task.id })
+          });
+          loadDownloadTasks();
+        });
+      }
+
+      if (task.status === 'completed' || task.status === 'cancelled') {
+        setTimeout(() => {
+          loadDownloadTasks();
+        }, 1000);
+      }
+    } else {
+      loadDownloadTasks();
+    }
+  }
+
+  // --- Multi Uploader Controller (Up to 4GB) ---
+  function setupMultiUploader() {
+    const btnModeFile = document.getElementById('btn-up-mode-file');
+    const btnModeLocal = document.getElementById('btn-up-mode-local');
+    const formFile = document.getElementById('up-form-file');
+    const formLocal = document.getElementById('up-form-local');
+    const dropzone = document.getElementById('up-dropzone');
+    const fileInput = document.getElementById('up-file-input');
+    const fileInfoCard = document.getElementById('up-selected-file-info');
+    const cardFileName = document.getElementById('up-card-filename');
+    const cardFileSize = document.getElementById('up-card-filesize');
+    const btnClearFile = document.getElementById('btn-up-clear-file');
+    const btnStart = document.getElementById('btn-start-upload');
+    const spinner = document.getElementById('up-start-spinner');
+
+    let uploadSourceMode = 'file';
+
+    if (btnModeFile && btnModeLocal) {
+      btnModeFile.addEventListener('click', () => {
+        btnModeFile.classList.add('active');
+        btnModeLocal.classList.remove('active');
+        formFile.classList.remove('hidden');
+        formLocal.classList.add('hidden');
+        uploadSourceMode = 'file';
+      });
+      btnModeLocal.addEventListener('click', () => {
+        btnModeLocal.classList.add('active');
+        btnModeFile.classList.remove('active');
+        formLocal.classList.remove('hidden');
+        formFile.classList.add('hidden');
+        uploadSourceMode = 'local';
+      });
+    }
+
+    if (dropzone && fileInput) {
+      dropzone.addEventListener('click', () => fileInput.click());
+      dropzone.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        dropzone.classList.add('dragover');
+      });
+      dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
+      dropzone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        dropzone.classList.remove('dragover');
+        if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+          handleFileSelected(e.dataTransfer.files[0]);
+        }
+      });
+      fileInput.addEventListener('change', () => {
+        if (fileInput.files && fileInput.files.length > 0) {
+          handleFileSelected(fileInput.files[0]);
+        }
+      });
+    }
+
+    function handleFileSelected(file) {
+      activeUploadFile = file;
+      if (dropzone) dropzone.classList.add('hidden');
+      if (fileInfoCard) {
+        fileInfoCard.classList.remove('hidden');
+        cardFileName.textContent = file.name;
+        cardFileSize.textContent = formatBytes(file.size);
+      }
+    }
+
+    if (btnClearFile) {
+      btnClearFile.addEventListener('click', () => {
+        activeUploadFile = null;
+        if (fileInput) fileInput.value = '';
+        if (dropzone) dropzone.classList.remove('hidden');
+        if (fileInfoCard) fileInfoCard.classList.add('hidden');
+      });
+    }
+
+    if (btnStart) {
+      btnStart.addEventListener('click', async () => {
+        const chatID = parseInt(document.getElementById('up-chat-select').value, 10);
+        if (!chatID) {
+          showToast('Please select a destination chat');
+          return;
+        }
+
+        const mediaType = document.getElementById('up-type-select').value;
+        const caption = document.getElementById('up-caption-input').value.trim();
+        const replyTo = parseInt(document.getElementById('up-reply-input').value, 10) || 0;
+
+        btnStart.disabled = true;
+        if (spinner) spinner.classList.remove('hidden');
+
+        try {
+          if (uploadSourceMode === 'local') {
+            const localPath = document.getElementById('up-local-path-input').value.trim();
+            if (!localPath) {
+              showToast('Please enter a valid local file path');
+              return;
+            }
+
+            const res = await fetch('/api/uploader/start', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                file_path: localPath,
+                target_chat_id: chatID,
+                caption: caption,
+                media_type: mediaType,
+                reply_to_msg_id: replyTo
+              })
+            });
+
+            if (!res.ok) {
+              const err = await res.json().catch(() => ({}));
+              throw new Error(err.error || 'Failed to start upload');
+            }
+          } else {
+            if (!activeUploadFile) {
+              showToast('Please choose a file to upload');
+              return;
+            }
+
+            const fd = new FormData();
+            fd.append('file', activeUploadFile);
+            fd.append('target_chat_id', chatID.toString());
+            fd.append('caption', caption);
+            fd.append('media_type', mediaType);
+            fd.append('reply_to_msg_id', replyTo.toString());
+
+            const res = await fetch('/api/uploader/upload-file', {
+              method: 'POST',
+              body: fd
+            });
+
+            if (!res.ok) {
+              const err = await res.json().catch(() => ({}));
+              throw new Error(err.error || 'Upload error');
+            }
+          }
+
+          showToast('File queued for upload!');
+
+          // Reset inputs
+          if (btnClearFile) btnClearFile.click();
+          document.getElementById('up-caption-input').value = '';
+
+          // Switch to Queue tab
+          const queueTab = el.multiUpModal.querySelector('.power-tab[data-tab="up-queue"]');
+          if (queueTab) queueTab.click();
+
+          loadUploadTasks();
+        } catch (e) {
+          showToast('Upload error: ' + e.message);
+        } finally {
+          btnStart.disabled = false;
+          if (spinner) spinner.classList.add('hidden');
+        }
+      });
+    }
+  }
+
+  async function loadUploadTasks() {
+    try {
+      const res = await fetch('/api/uploader/tasks');
+      if (!res.ok) return;
+      const data = await res.json();
+      renderUploadTasks(data.tasks || []);
+    } catch (e) {
+      console.error('Failed loading upload tasks:', e);
+    }
+  }
+
+  function renderUploadTasks(tasks) {
+    const list = document.getElementById('up-queue-list');
+    const queueBadge = document.getElementById('up-queue-count');
+    if (!list) return;
+
+    const activeTasks = tasks.filter(t => t.status !== 'completed' && t.status !== 'cancelled');
+    if (queueBadge) queueBadge.textContent = activeTasks.length;
+
+    if (tasks.length === 0) {
+      list.innerHTML = '<div class="power-empty-state">No upload tasks in queue.</div>';
+      return;
+    }
+
+    list.innerHTML = '';
+    tasks.forEach(task => {
+      const card = document.createElement('div');
+      card.className = 'power-task-card';
+      card.id = `up-task-${task.id}`;
+
+      const percent = task.file_size > 0
+        ? Math.min(100, Math.round((task.sent_bytes / task.file_size) * 100))
+        : 0;
+
+      const badgeClass = task.status === 'uploading' ? 'badge-connected' : 'badge-connecting';
+
+      card.innerHTML = `
+        <div class="power-task-title-row">
+          <span class="power-task-title">${task.file_name}</span>
+          <span class="badge ${badgeClass}">${task.status.toUpperCase()}</span>
+        </div>
+        <div class="power-progress-bar-wrap">
+          <div class="power-progress-bar" style="width: ${percent}%;"></div>
+        </div>
+        <div class="power-task-meta-row">
+          <span>${formatBytes(task.sent_bytes)} / ${formatBytes(task.file_size)} (${percent}%)</span>
+          <span>⚡ ${formatSpeed(task.speed)}</span>
+          <span>To: ${task.chat_title || 'Chat'}</span>
+          <div class="power-task-actions">
+            ${task.status === 'uploading' || task.status === 'queued' ? `<button class="power-btn-sm text-danger btn-up-cancel" data-id="${task.id}">Cancel</button>` : ''}
+          </div>
+        </div>
+      `;
+
+      card.querySelector('.btn-up-cancel')?.addEventListener('click', async () => {
+        await fetch('/api/uploader/cancel', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ task_id: task.id })
+        });
+        loadUploadTasks();
+      });
+
+      list.appendChild(card);
+    });
+  }
+
+  function handleUploadProgressWS(task) {
+    if (!task) return;
+    const existing = document.getElementById(`up-task-${task.id}`);
+    if (existing) {
+      const isCompleted = task.status === 'completed';
+      const percent = isCompleted
+        ? 100
+        : (task.file_size > 0
+            ? Math.min(100, Math.round((task.sent_bytes / task.file_size) * 100))
+            : 0);
+
+      const badge = existing.querySelector('.power-task-title-row .badge');
+      if (badge) {
+        badge.textContent = task.status.toUpperCase();
+        badge.className = `badge ${task.status === 'completed' || task.status === 'uploading' ? 'badge-connected' : 'badge-connecting'}`;
+      }
+
+      const pBar = existing.querySelector('.power-progress-bar');
+      if (pBar) pBar.style.width = `${percent}%`;
+
+      const meta = existing.querySelector('.power-task-meta-row');
+      if (meta) {
+        const sentBytes = isCompleted ? task.file_size : task.sent_bytes;
+        const curSpeed = isCompleted ? 0 : task.speed;
+        meta.innerHTML = `
+          <span>${formatBytes(sentBytes)} / ${formatBytes(task.file_size)} (${percent}%)</span>
+          <span>⚡ ${formatSpeed(curSpeed)}</span>
+          <span>To: ${task.chat_title || 'Chat'}</span>
+          <div class="power-task-actions">
+            ${task.status === 'uploading' || task.status === 'queued' ? `<button class="power-btn-sm text-danger btn-up-cancel" data-id="${task.id}">Cancel</button>` : ''}
+          </div>
+        `;
+
+        existing.querySelector('.btn-up-cancel')?.addEventListener('click', async () => {
+          await fetch('/api/uploader/cancel', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ task_id: task.id })
+          });
+          loadUploadTasks();
+        });
+      }
+
+      if (task.status === 'completed' || task.status === 'cancelled') {
+        setTimeout(() => {
+          loadUploadTasks();
+        }, 1000);
+      }
+    } else {
+      loadUploadTasks();
+    }
+  }
+
+  // --- Indexer & Cache Controller ---
+  function setupIndexer() {
+    const btnStart = document.getElementById('btn-start-indexing');
+    const spinner = document.getElementById('idx-start-spinner');
+    const progressCard = document.getElementById('idx-progress-card');
+    const progressBar = document.getElementById('idx-progress-bar');
+    const cardTitle = document.getElementById('idx-card-title');
+    const cardCount = document.getElementById('idx-card-count');
+    const btnCancel = document.getElementById('btn-cancel-indexing');
+
+    if (btnStart) {
+      btnStart.addEventListener('click', async () => {
+        const chatID = parseInt(document.getElementById('idx-chat-select').value, 10);
+        if (!chatID) {
+          showToast('Please select a chat to index');
+          return;
+        }
+        const limit = parseInt(document.getElementById('idx-limit-input').value, 10) || 1000;
+
+        btnStart.disabled = true;
+        if (spinner) spinner.classList.remove('hidden');
+
+        try {
+          const res = await fetch('/api/indexer/start', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: chatID, limit: limit })
+          });
+
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.error || 'Failed to start indexing');
+          }
+
+          if (progressCard) progressCard.classList.remove('hidden');
+          showToast('Chat indexing started!');
+        } catch (e) {
+          showToast('Error: ' + e.message);
+        } finally {
+          btnStart.disabled = false;
+          if (spinner) spinner.classList.add('hidden');
+        }
+      });
+    }
+
+    if (btnCancel) {
+      btnCancel.addEventListener('click', async () => {
+        await fetch('/api/indexer/cancel', { method: 'POST' });
+        showToast('Indexing cancelled');
+      });
+    }
+
+    // Fast Search
+    const btnSearch = document.getElementById('btn-run-idx-search');
+    if (btnSearch) {
+      btnSearch.addEventListener('click', async () => {
+        const q = document.getElementById('idx-search-query').value.trim();
+        const chatID = document.getElementById('idx-search-chat').value;
+        const mediaOnly = document.getElementById('idx-search-media-only').checked;
+        const resultsBox = document.getElementById('idx-search-results');
+
+        if (resultsBox) resultsBox.innerHTML = '<div class="power-empty-state"><div class="spinner-large"></div> Searching...</div>';
+
+        try {
+          const params = new URLSearchParams({
+            q: q,
+            chat_id: chatID,
+            media_only: mediaOnly ? 'true' : 'false',
+            limit: '100'
+          });
+          const res = await fetch(`/api/indexer/search?${params.toString()}`);
+          if (!res.ok) throw new Error('Search failed');
+          const data = await res.json();
+
+          if (!data.results || data.results.length === 0) {
+            resultsBox.innerHTML = '<div class="power-empty-state">No matching indexed messages found.</div>';
+            return;
+          }
+
+          resultsBox.innerHTML = '';
+          data.results.forEach(msg => {
+            const item = document.createElement('div');
+            item.className = 'power-search-item';
+            item.innerHTML = `
+              <div class="search-item-header">
+                <span class="search-item-sender">${msg.sender_name || 'Sender'}</span>
+                <span class="search-item-date">${new Date(msg.date).toLocaleDateString()} ${new Date(msg.date).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</span>
+              </div>
+              <div class="search-item-text">${msg.text || (msg.media ? `[${msg.media.type || 'Media'}: ${msg.media.file_name || 'File'}]` : '')}</div>
+              ${msg.media ? `<span class="search-item-media-tag">📎 ${msg.media.file_name || 'Media'} (${formatBytes(msg.media.file_size)})</span>` : ''}
+            `;
+            item.addEventListener('click', () => {
+              if (msg.chat_id) {
+                closePowerModal(el.indexerModal, el.indexerBackdrop);
+                selectChat(msg.chat_id);
+              }
+            });
+            resultsBox.appendChild(item);
+          });
+        } catch (e) {
+          if (resultsBox) resultsBox.innerHTML = `<div class="power-empty-state text-danger">${e.message}</div>`;
+        }
+      });
+    }
+
+    // Export Chat (JSON)
+    const btnExport = document.getElementById('btn-export-chat-json');
+    if (btnExport) {
+      btnExport.addEventListener('click', () => {
+        const chatID = document.getElementById('idx-export-chat-select').value;
+        if (!chatID) {
+          showToast('Select a chat to export');
+          return;
+        }
+        window.open(`/api/indexer/export?chat_id=${chatID}`, '_blank');
+      });
+    }
+
+    // Cache Stats & Maintenance
+    const btnRefreshCache = document.getElementById('btn-refresh-cache-stats');
+    if (btnRefreshCache) {
+      btnRefreshCache.addEventListener('click', loadCacheStats);
+    }
+
+    const btnPurgeMedia = document.getElementById('btn-purge-media-cache');
+    if (btnPurgeMedia) {
+      btnPurgeMedia.addEventListener('click', async () => {
+        if (!confirm('Purge all cached media files from disk?')) return;
+        await fetch('/api/cache/clear', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ clear_media: true, clear_history: false })
+        });
+        showToast('Media cache purged');
+        loadCacheStats();
+      });
+    }
+
+    const btnPurgeAll = document.getElementById('btn-purge-all-cache');
+    if (btnPurgeAll) {
+      btnPurgeAll.addEventListener('click', async () => {
+        if (!confirm('Purge all local database indexed messages? (Cloud messages will not be deleted)')) return;
+        await fetch('/api/cache/clear', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ clear_media: true, clear_history: true })
+        });
+        showToast('All local message indices purged');
+        loadCacheStats();
+      });
+    }
+  }
+
+  function handleIndexerProgressWS(status) {
+    if (!status) return;
+    const progressCard = document.getElementById('idx-progress-card');
+    const progressBar = document.getElementById('idx-progress-bar');
+    const cardTitle = document.getElementById('idx-card-title');
+    const cardCount = document.getElementById('idx-card-count');
+    const cardBadge = document.getElementById('idx-card-badge');
+
+    if (!progressCard) return;
+
+    if (status.is_indexing) {
+      progressCard.classList.remove('hidden');
+      if (cardTitle) cardTitle.textContent = `Indexing ${status.chat_title || 'Chat'}...`;
+      if (cardBadge) cardBadge.textContent = 'Running';
+      const percent = status.total_count > 0 ? Math.min(100, Math.round((status.indexed_count / status.total_count) * 100)) : 0;
+      if (progressBar) progressBar.style.width = `${percent}%`;
+      if (cardCount) cardCount.textContent = `${status.indexed_count} messages indexed`;
+    } else {
+      if (cardBadge) cardBadge.textContent = status.status.toUpperCase();
+      if (status.status === 'completed') {
+        showToast(`Indexed ${status.indexed_count} messages successfully!`);
+        setTimeout(() => progressCard.classList.add('hidden'), 3000);
+      }
+    }
+  }
+
+  async function loadCacheStats() {
+    try {
+      const res = await fetch('/api/cache/stats');
+      if (!res.ok) return;
+      const stats = await res.json();
+      document.getElementById('cache-stat-media-size').textContent = stats.media_cache_formatted || '0 B';
+      document.getElementById('cache-stat-media-files').textContent = (stats.media_cache_files || 0).toString();
+      document.getElementById('cache-stat-db-size').textContent = stats.history_db_formatted || '0 B';
+      document.getElementById('cache-stat-msgs-count').textContent = (stats.cached_messages_count || 0).toString();
+    } catch (e) {
+      console.error('Failed to load cache stats:', e);
+    }
+  }
+
+  // --- Media Hub & Inspector Controller ---
+  function setupMediaHub() {
+    const btnInspect = document.getElementById('btn-run-media-inspect');
+    const spinner = document.getElementById('hub-inspect-spinner');
+    const resultBox = document.getElementById('hub-inspect-result');
+
+    if (btnInspect) {
+      btnInspect.addEventListener('click', async () => {
+        const chatID = document.getElementById('hub-chat-select').value;
+        const msgID = parseInt(document.getElementById('hub-msg-id-input').value, 10);
+
+        if (!chatID || !msgID) {
+          showToast('Please select a chat and enter a Message ID');
+          return;
+        }
+
+        btnInspect.disabled = true;
+        if (spinner) spinner.classList.remove('hidden');
+
+        try {
+          const res = await fetch(`/api/media/inspect?chat_id=${chatID}&message_id=${msgID}`);
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.error || 'Failed to inspect media');
+          }
+
+          const data = await res.json();
+          if (!data.has_media) {
+            showToast('Message does not contain any media');
+            if (resultBox) resultBox.classList.add('hidden');
+            return;
+          }
+
+          if (resultBox) {
+            resultBox.classList.remove('hidden');
+            document.getElementById('hub-tl-type').textContent = data.tl_type || 'TL Object';
+            document.getElementById('hub-media-type').textContent = (data.media_type || 'media').toUpperCase();
+            document.getElementById('hub-val-filename').textContent = data.file_name || '-';
+            document.getElementById('hub-val-filesize').textContent = data.file_size_formatted || formatBytes(data.file_size);
+            document.getElementById('hub-val-mime').textContent = data.mime_type || '-';
+            document.getElementById('hub-val-dc').textContent = `DC ${data.dc_id || 0}`;
+            document.getElementById('hub-val-thumb').textContent = data.has_thumb ? `Yes (${formatBytes(data.thumb_size)})` : 'No';
+            document.getElementById('hub-val-convertible').textContent = data.can_convert ? 'Yes (Fully Supported)' : 'No';
+            document.getElementById('hub-val-attributes').textContent = JSON.stringify(data.attributes || {}, null, 2);
+
+            const directLink = document.getElementById('hub-direct-link');
+            if (directLink) directLink.href = data.direct_url || '#';
+          }
+        } catch (e) {
+          showToast('Inspect error: ' + e.message);
+        } finally {
+          btnInspect.disabled = false;
+          if (spinner) spinner.classList.add('hidden');
+        }
+      });
+    }
   }
 
   // Initialize

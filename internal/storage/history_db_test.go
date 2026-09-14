@@ -93,4 +93,40 @@ func TestHistoryDB_ChatsAndMessages(t *testing.T) {
 	if page[0].ID > page[len(page)-1].ID {
 		t.Fatalf("Expected ascending order in page: %d vs %d", page[0].ID, page[len(page)-1].ID)
 	}
+
+	// 6. Search Messages
+	results, err := db.SearchMessages("Message 3", 123456789, false, 10)
+	if err != nil {
+		t.Fatalf("SearchMessages failed: %v", err)
+	}
+	if len(results) != 1 || results[0].ID != 3 {
+		t.Fatalf("Expected to find Message 3, got %+v", results)
+	}
+
+	// 7. Get All Messages For Chat
+	allMsgs, err := db.GetAllMessagesForChat(123456789)
+	if err != nil {
+		t.Fatalf("GetAllMessagesForChat failed: %v", err)
+	}
+	if len(allMsgs) != 5 {
+		t.Fatalf("Expected 5 messages, got %d", len(allMsgs))
+	}
+
+	// 8. Stats
+	chatCount, msgCount, dbSize, err := db.GetStats()
+	if err != nil {
+		t.Fatalf("GetStats failed: %v", err)
+	}
+	if chatCount != 1 || msgCount != 5 || dbSize <= 0 {
+		t.Fatalf("Invalid stats: chats=%d, msgs=%d, size=%d", chatCount, msgCount, dbSize)
+	}
+
+	// 9. Clear Chat Messages
+	if err := db.ClearChatMessages(123456789); err != nil {
+		t.Fatalf("ClearChatMessages failed: %v", err)
+	}
+	afterClearCount, _ := db.CountMessages(123456789)
+	if afterClearCount != 0 {
+		t.Fatalf("Expected 0 messages after clear, got %d", afterClearCount)
+	}
 }

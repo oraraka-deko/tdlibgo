@@ -1,0 +1,3 @@
+# Queue manager for downloads and uploads with support of setting limits, start and end dete time , and active days , and what to do after ends and more.
+# setting UP extra OAuth that has useage when we want serving app on a remote server or public address they can be reached (not behind nat)
+# awesome feat with freebox...

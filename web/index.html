@@ -206,6 +206,28 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
           <span>Live Logs & MTProto</span>
         </button>
+        <div class="drawer-section-divider"></div>
+        <div class="drawer-section-header">TDL POWER SUITE</div>
+        <button class="drawer-item drawer-feature-item" id="btn-drawer-downloader">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+          <span>Batch Downloader</span>
+          <span class="feature-tag">TDL</span>
+        </button>
+        <button class="drawer-item drawer-feature-item" id="btn-drawer-uploader">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+          <span>4GB Multi-Uploader</span>
+          <span class="feature-tag">4GB</span>
+        </button>
+        <button class="drawer-item drawer-feature-item" id="btn-drawer-indexer">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path></svg>
+          <span>Indexer & Cacher</span>
+          <span class="feature-tag">DB</span>
+        </button>
+        <button class="drawer-item drawer-feature-item" id="btn-drawer-mediahub">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="23 7 16 12 23 17 23 7"></polygon><rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect></svg>
+          <span>Media Hub & Inspector</span>
+          <span class="feature-tag">PRO</span>
+        </button>
         <div class="drawer-divider"></div>
         <button class="drawer-item text-danger" id="btn-logout">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>
@@ -636,6 +658,403 @@
         <span>Send</span>
         <div class="spinner hidden" id="upload-spinner"></div>
       </button>
+    </div>
+  </div>
+
+  <!-- 1. TDL Batch Downloader Modal -->
+  <div id="batch-dl-backdrop" class="modal-backdrop hidden"></div>
+  <div id="batch-dl-modal" class="power-modal hidden">
+    <div class="power-modal-header">
+      <div class="power-modal-title">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="power-title-icon"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+        <span>TDL Batch Downloader</span>
+      </div>
+      <button id="btn-close-batch-dl" class="btn-icon" title="Close">✕</button>
+    </div>
+    <div class="power-modal-tabs">
+      <button class="power-tab active" data-tab="dl-new">New Download</button>
+      <button class="power-tab" data-tab="dl-queue">Active Tasks <span class="tab-pill" id="dl-queue-count">0</span></button>
+      <button class="power-tab" data-tab="dl-completed">Completed</button>
+    </div>
+    <div class="power-modal-body">
+      <!-- Tab 1: New Task -->
+      <div id="tab-dl-new" class="power-tab-pane active">
+        <div class="power-form-group">
+          <label>Download Source</label>
+          <div class="power-toggle-group">
+            <button type="button" class="power-toggle-btn active" id="btn-dl-mode-chat">From Chat Messages</button>
+            <button type="button" class="power-toggle-btn" id="btn-dl-mode-url">From Telegram Links / URLs</button>
+          </div>
+        </div>
+
+        <!-- Mode Chat -->
+        <div id="dl-form-chat" class="power-subform">
+          <div class="power-form-group">
+            <label for="dl-chat-select">Target Chat</label>
+            <select id="dl-chat-select" class="power-select"></select>
+          </div>
+          <div class="power-form-row">
+            <div class="power-form-group">
+              <label for="dl-start-msg">Start Msg ID (optional)</label>
+              <input type="number" id="dl-start-msg" class="power-input" placeholder="e.g. 100">
+            </div>
+            <div class="power-form-group">
+              <label for="dl-end-msg">End Msg ID (optional)</label>
+              <input type="number" id="dl-end-msg" class="power-input" placeholder="e.g. 250">
+            </div>
+          </div>
+          <div class="power-form-row">
+            <div class="power-form-group">
+              <label for="dl-filter-select">Media Filter</label>
+              <select id="dl-filter-select" class="power-select">
+                <option value="all">All Media (Photos, Videos, Docs, Audio)</option>
+                <option value="video">Videos Only (.mp4, .mkv)</option>
+                <option value="photo">Photos Only (.jpg, .png)</option>
+                <option value="document">Documents Only</option>
+                <option value="audio">Audio & Music Only</option>
+              </select>
+            </div>
+            <div class="power-form-group">
+              <label for="dl-limit-input">Max Message Scan Limit</label>
+              <input type="number" id="dl-limit-input" class="power-input" value="100" min="1" max="1000">
+            </div>
+          </div>
+        </div>
+
+        <!-- Mode URLs -->
+        <div id="dl-form-url" class="power-subform hidden">
+          <div class="power-form-group">
+            <label for="dl-urls-input">Telegram Message Links (one per line)</label>
+            <textarea id="dl-urls-input" class="power-textarea" rows="4" placeholder="https://t.me/c/1234567890/42&#10;https://t.me/channelname/105"></textarea>
+          </div>
+        </div>
+
+        <!-- Common Options -->
+        <div class="power-form-row">
+          <div class="power-form-group">
+            <label for="dl-output-dir">Save Directory</label>
+            <input type="text" id="dl-output-dir" class="power-input" value="downloads">
+          </div>
+          <div class="power-form-group">
+            <label for="dl-threads-input">Parallel DC Threads</label>
+            <input type="number" id="dl-threads-input" class="power-input" value="4" min="1" max="8">
+          </div>
+        </div>
+
+        <div class="power-actions">
+          <button type="button" class="btn btn-primary" id="btn-start-batch-dl">
+            <span>Start Download</span>
+            <div class="spinner hidden" id="dl-start-spinner"></div>
+          </button>
+        </div>
+      </div>
+
+      <!-- Tab 2: Queue -->
+      <div id="tab-dl-queue" class="power-tab-pane">
+        <div id="dl-queue-list" class="power-task-list">
+          <div class="power-empty-state">No active download tasks. Start one from the New Download tab!</div>
+        </div>
+      </div>
+
+      <!-- Tab 3: Completed -->
+      <div id="tab-dl-completed" class="power-tab-pane">
+        <div id="dl-completed-list" class="power-task-list">
+          <div class="power-empty-state">No completed downloads yet.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 2. TDL 4GB Multi Uploader Modal -->
+  <div id="multi-up-backdrop" class="modal-backdrop hidden"></div>
+  <div id="multi-up-modal" class="power-modal hidden">
+    <div class="power-modal-header">
+      <div class="power-modal-title">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="power-title-icon"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+        <span>TDL Multi-Uploader Engine (Up to 4GB)</span>
+      </div>
+      <button id="btn-close-multi-up" class="btn-icon" title="Close">✕</button>
+    </div>
+    <div class="power-modal-tabs">
+      <button class="power-tab active" data-tab="up-new">New Upload</button>
+      <button class="power-tab" data-tab="up-queue">Upload Queue <span class="tab-pill" id="up-queue-count">0</span></button>
+    </div>
+    <div class="power-modal-body">
+      <!-- Tab 1: New Upload -->
+      <div id="tab-up-new" class="power-tab-pane active">
+        <div class="power-form-group">
+          <label for="up-chat-select">Destination Chat / Channel / Topic</label>
+          <select id="up-chat-select" class="power-select"></select>
+        </div>
+
+        <div class="power-form-group">
+          <label>File Source</label>
+          <div class="power-toggle-group">
+            <button type="button" class="power-toggle-btn active" id="btn-up-mode-file">Browser File Picker</button>
+            <button type="button" class="power-toggle-btn" id="btn-up-mode-local">Local Server Path (Instant 4GB)</button>
+          </div>
+        </div>
+
+        <!-- Mode Browser File -->
+        <div id="up-form-file" class="power-subform">
+          <div class="power-dropzone" id="up-dropzone">
+            <input type="file" id="up-file-input" class="hidden">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="dropzone-icon"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+            <div class="dropzone-text">Drag & drop files here or <span class="dropzone-link">browse</span></div>
+            <div class="dropzone-sub">Supports all formats up to 4GB with chunked MTProto streaming</div>
+          </div>
+          <div id="up-selected-file-info" class="power-file-card hidden">
+            <div class="file-card-name" id="up-card-filename">file.mp4</div>
+            <div class="file-card-meta" id="up-card-filesize">0 MB</div>
+            <button type="button" class="btn-text text-danger" id="btn-up-clear-file">Remove</button>
+          </div>
+        </div>
+
+        <!-- Mode Local Path -->
+        <div id="up-form-local" class="power-subform hidden">
+          <div class="power-form-group">
+            <label for="up-local-path-input">Local File Path on Disk</label>
+            <input type="text" id="up-local-path-input" class="power-input" placeholder="e.g. C:\Downloads\BigMovie4GB.mp4 or ./downloads/archive.zip">
+            <div class="power-tip">🚀 Zero browser upload latency: directly streams chunks into Telegram MTProto workers from disk.</div>
+          </div>
+        </div>
+
+        <div class="power-form-row">
+          <div class="power-form-group">
+            <label for="up-type-select">Media Category</label>
+            <select id="up-type-select" class="power-select">
+              <option value="auto">Auto Detect MIME</option>
+              <option value="document">Document / General File</option>
+              <option value="video">Video (Fast Streaming Container)</option>
+              <option value="photo">Photo / Image</option>
+              <option value="audio">Audio / Music Track</option>
+            </select>
+          </div>
+          <div class="power-form-group">
+            <label for="up-reply-input">Reply To Msg ID (optional)</label>
+            <input type="number" id="up-reply-input" class="power-input" placeholder="0">
+          </div>
+        </div>
+
+        <div class="power-form-group">
+          <label for="up-caption-input">Caption</label>
+          <textarea id="up-caption-input" class="power-textarea" rows="2" placeholder="Write caption..."></textarea>
+        </div>
+
+        <div class="power-actions">
+          <button type="button" class="btn btn-primary" id="btn-start-upload">
+            <span>Upload to Telegram</span>
+            <div class="spinner hidden" id="up-start-spinner"></div>
+          </button>
+        </div>
+      </div>
+
+      <!-- Tab 2: Queue -->
+      <div id="tab-up-queue" class="power-tab-pane">
+        <div id="up-queue-list" class="power-task-list">
+          <div class="power-empty-state">No upload tasks in queue.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 3. TDL Indexer & Cache Manager Modal -->
+  <div id="indexer-backdrop" class="modal-backdrop hidden"></div>
+  <div id="indexer-modal" class="power-modal hidden">
+    <div class="power-modal-header">
+      <div class="power-modal-title">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="power-title-icon"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path></svg>
+        <span>TDL Indexer & Cache Manager</span>
+      </div>
+      <button id="btn-close-indexer" class="btn-icon" title="Close">✕</button>
+    </div>
+    <div class="power-modal-tabs">
+      <button class="power-tab active" data-tab="idx-crawler">Chat Indexer</button>
+      <button class="power-tab" data-tab="idx-search">Index Search</button>
+      <button class="power-tab" data-tab="idx-export">Chat Export (JSON)</button>
+      <button class="power-tab" data-tab="idx-cache">Disk Cache</button>
+    </div>
+    <div class="power-modal-body">
+      <!-- Tab 1: Crawler -->
+      <div id="tab-idx-crawler" class="power-tab-pane active">
+        <div class="power-form-group">
+          <label for="idx-chat-select">Select Chat to Index</label>
+          <select id="idx-chat-select" class="power-select"></select>
+        </div>
+        <div class="power-form-group">
+          <label for="idx-limit-input">Max Messages to Index</label>
+          <input type="number" id="idx-limit-input" class="power-input" value="1000" min="50" max="10000">
+        </div>
+        <div class="power-actions">
+          <button type="button" class="btn btn-primary" id="btn-start-indexing">
+            <span>Start Indexing Chat</span>
+            <div class="spinner hidden" id="idx-start-spinner"></div>
+          </button>
+        </div>
+
+        <div id="idx-progress-card" class="power-task-card hidden" style="margin-top:20px;">
+          <div class="power-task-title-row">
+            <span class="power-task-title" id="idx-card-title">Indexing...</span>
+            <span class="badge badge-connecting" id="idx-card-badge">Running</span>
+          </div>
+          <div class="power-progress-bar-wrap">
+            <div class="power-progress-bar" id="idx-progress-bar" style="width: 0%;"></div>
+          </div>
+          <div class="power-task-meta-row">
+            <span id="idx-card-count">0 messages indexed</span>
+            <button type="button" class="btn-text text-danger" id="btn-cancel-indexing">Cancel</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tab 2: Search -->
+      <div id="tab-idx-search" class="power-tab-pane">
+        <div class="power-form-row">
+          <div class="power-form-group" style="flex:2;">
+            <label for="idx-search-query">Search Term / Keyword / Filename</label>
+            <input type="text" id="idx-search-query" class="power-input" placeholder="Search message text, sender, or media...">
+          </div>
+          <div class="power-form-group">
+            <label for="idx-search-chat">Scope</label>
+            <select id="idx-search-chat" class="power-select">
+              <option value="0">All Indexed Chats</option>
+            </select>
+          </div>
+        </div>
+        <div class="power-form-group">
+          <label class="power-checkbox-label">
+            <input type="checkbox" id="idx-search-media-only">
+            <span>Only show messages with media files</span>
+          </label>
+        </div>
+        <button type="button" class="btn btn-primary" id="btn-run-idx-search">Search Database</button>
+
+        <div id="idx-search-results" class="power-search-results">
+          <!-- Populated dynamically -->
+        </div>
+      </div>
+
+      <!-- Tab 3: Export -->
+      <div id="tab-idx-export" class="power-tab-pane">
+        <p class="power-desc">Export all indexed messages, media files, and sender metadata for a chat in clean JSON format matching <code>tdl chat export</code>.</p>
+        <div class="power-form-group">
+          <label for="idx-export-chat-select">Chat to Export</label>
+          <select id="idx-export-chat-select" class="power-select"></select>
+        </div>
+        <div class="power-actions">
+          <button type="button" class="btn btn-primary" id="btn-export-chat-json">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;margin-right:6px;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+            <span>Download Chat Export (JSON)</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Tab 4: Disk Cache -->
+      <div id="tab-idx-cache" class="power-tab-pane">
+        <div class="cache-stat-grid">
+          <div class="cache-stat-card">
+            <div class="cache-stat-val" id="cache-stat-media-size">0 MB</div>
+            <div class="cache-stat-lbl">Cached Media On Disk</div>
+          </div>
+          <div class="cache-stat-card">
+            <div class="cache-stat-val" id="cache-stat-media-files">0</div>
+            <div class="cache-stat-lbl">Media Files</div>
+          </div>
+          <div class="cache-stat-card">
+            <div class="cache-stat-val" id="cache-stat-db-size">0 MB</div>
+            <div class="cache-stat-lbl">History DB Size</div>
+          </div>
+          <div class="cache-stat-card">
+            <div class="cache-stat-val" id="cache-stat-msgs-count">0</div>
+            <div class="cache-stat-lbl">Indexed Messages</div>
+          </div>
+        </div>
+
+        <div class="cache-actions-box">
+          <h4>Cache Maintenance</h4>
+          <p class="power-desc">Clear local caches to reclaim disk space. Telegram servers retain your cloud messages and media.</p>
+          <div class="cache-btn-row">
+            <button type="button" class="btn btn-secondary" id="btn-refresh-cache-stats">Refresh Stats</button>
+            <button type="button" class="btn btn-secondary text-danger" id="btn-purge-media-cache">Purge Media Cache</button>
+            <button type="button" class="btn btn-secondary text-danger" id="btn-purge-all-cache">Purge All Indexed Messages</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 4. TDL Media Hub & Inspector Modal -->
+  <div id="mediahub-backdrop" class="modal-backdrop hidden"></div>
+  <div id="mediahub-modal" class="power-modal hidden">
+    <div class="power-modal-header">
+      <div class="power-modal-title">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="power-title-icon"><polygon points="23 7 16 12 23 17 23 7"></polygon><rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect></svg>
+        <span>TDL Media Hub & MTProto Inspector</span>
+      </div>
+      <button id="btn-close-mediahub" class="btn-icon" title="Close">✕</button>
+    </div>
+    <div class="power-modal-body">
+      <div class="power-form-row">
+        <div class="power-form-group" style="flex:2;">
+          <label for="hub-chat-select">Target Chat</label>
+          <select id="hub-chat-select" class="power-select"></select>
+        </div>
+        <div class="power-form-group">
+          <label for="hub-msg-id-input">Message ID</label>
+          <input type="number" id="hub-msg-id-input" class="power-input" placeholder="Message ID">
+        </div>
+        <div class="power-form-group" style="align-self:flex-end;">
+          <button type="button" class="btn btn-primary" id="btn-run-media-inspect">
+            <span>Inspect</span>
+            <div class="spinner hidden" id="hub-inspect-spinner"></div>
+          </button>
+        </div>
+      </div>
+
+      <div id="hub-inspect-result" class="hub-result-container hidden">
+        <div class="hub-result-card">
+          <div class="hub-card-header">
+            <span class="hub-tl-badge" id="hub-tl-type">TL Class</span>
+            <span class="hub-media-badge" id="hub-media-type">video</span>
+          </div>
+          <div class="hub-grid">
+            <div class="hub-grid-item">
+              <span class="hub-lbl">File Name:</span>
+              <span class="hub-val" id="hub-val-filename">-</span>
+            </div>
+            <div class="hub-grid-item">
+              <span class="hub-lbl">File Size:</span>
+              <span class="hub-val" id="hub-val-filesize">-</span>
+            </div>
+            <div class="hub-grid-item">
+              <span class="hub-lbl">MIME Type:</span>
+              <span class="hub-val" id="hub-val-mime">-</span>
+            </div>
+            <div class="hub-grid-item">
+              <span class="hub-lbl">Storage DC:</span>
+              <span class="hub-val" id="hub-val-dc">-</span>
+            </div>
+            <div class="hub-grid-item">
+              <span class="hub-lbl">Has Thumbnail:</span>
+              <span class="hub-val" id="hub-val-thumb">-</span>
+            </div>
+            <div class="hub-grid-item">
+              <span class="hub-lbl">ConvInputMedia:</span>
+              <span class="hub-val text-success" id="hub-val-convertible">Yes (Fully Supported)</span>
+            </div>
+          </div>
+          <div class="hub-attributes-box">
+            <h4>Extracted MTProto Attributes</h4>
+            <pre class="hub-attr-code" id="hub-val-attributes">{}</pre>
+          </div>
+          <div class="hub-actions-row">
+            <a id="hub-direct-link" href="#" target="_blank" class="btn btn-primary">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;margin-right:6px;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+              Direct Stream / Download
+            </a>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 

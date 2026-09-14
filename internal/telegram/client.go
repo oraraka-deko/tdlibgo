@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -54,9 +55,13 @@ type ClientController struct {
 	peerDB          *pebble.PeerStorage
 	updatesRecovery *updates.Manager
 
-	uploader   *services.UploaderService
-	downloader *services.DownloaderService
-	syncer     *services.SyncerService
+	uploader        *services.UploaderService
+	downloader      *services.DownloaderService
+	syncer          *services.SyncerService
+	batchDownloader *services.BatchDownloaderService
+	multiUploader   *services.MultiUploaderEngine
+	indexerService  *services.IndexerService
+	mediaHubService *services.MediaHubService
 
 	codeChan     chan string
 	passwordChan chan string
@@ -258,6 +263,10 @@ func (c *ClientController) runClient(ctx context.Context) error {
 			// Initialize worker services with dedicated multi-DC data pool
 			c.uploader = services.NewUploaderService(pool, c.api)
 			c.downloader = services.NewDownloaderService(pool, filepath.Join(sessionDir, "media_cache"))
+			c.batchDownloader = services.NewBatchDownloaderService(pool, c.api, c.state)
+			c.multiUploader = services.NewMultiUploaderEngine(pool, c.api, c.state, filepath.Join(sessionDir, "upload_temp"))
+			c.indexerService = services.NewIndexerService(c.api, c.state.GetHistoryDB(), c.state, filepath.Join(sessionDir, "media_cache"), filepath.Join(sessionDir, "avatars"), filepath.Join(sessionDir, "history.db"))
+			c.mediaHubService = services.NewMediaHubService(c.api)
 
 			// Populate initial dialogs and entity cache synchronously so chats & peers are immediately ready
 			fetchCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
@@ -1371,6 +1380,39 @@ func (c *ClientController) GetDownloader() *services.DownloaderService {
 	return c.downloader
 }
 
+// GetBatchDownloader returns the batch downloader service.
+func (c *ClientController) GetBatchDownloader() *services.BatchDownloaderService {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.batchDownloader
+}
+
+// GetMultiUploader returns the multi-uploader engine.
+func (c *ClientController) GetMultiUploader() *services.MultiUploaderEngine {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.multiUploader
+}
+
+// GetIndexerService returns the indexing and cache manager service.
+func (c *ClientController) GetIndexerService() *services.IndexerService {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.indexerService
+}
+
+// GetMediaHubService returns the media hub and inspection service.
+func (c *ClientController) GetMediaHubService() *services.MediaHubService {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.mediaHubService
+}
+
+// ResolveInputPeer exposes peer resolution for services.
+func (c *ClientController) ResolveInputPeer(ctx context.Context, chatID int64) (tg.InputPeerClass, error) {
+	return c.resolveInputPeer(ctx, chatID)
+}
+
 // SetActiveChat informs the background syncer about user focus.
 func (c *ClientController) SetActiveChat(chatID int64) {
 	if c.syncer != nil {
@@ -2021,17 +2063,33 @@ func (c *ClientController) DownloadAvatar(ctx context.Context, peerID int64, big
 	// Helper to extract StrippedThumb bytes as fallback
 	getStrippedThumb := func() ([]byte, error) {
 		thumbStr := ""
-		if ent, ok := c.state.GetEntity(normID); ok && ent.StrippedThumb != "" {
-			thumbStr = ent.StrippedThumb
-		} else if chat, ok := c.state.GetChat(normID); ok && chat.StrippedThumb != "" {
-			thumbStr = chat.StrippedThumb
+		for _, id := range []int64{normID, peerID} {
+			if ent, ok := c.state.GetEntity(id); ok && ent.StrippedThumb != "" {
+				thumbStr = ent.StrippedThumb
+				break
+			}
+			if chat, ok := c.state.GetChat(id); ok && chat.StrippedThumb != "" {
+				thumbStr = chat.StrippedThumb
+				break
+			}
+		}
+		if thumbStr == "" {
+			for _, id := range []int64{normID, peerID} {
+				if ent, ok := c.state.GetEntity(id); ok && strings.HasPrefix(ent.PhotoURL, "data:") {
+					thumbStr = ent.PhotoURL
+					break
+				}
+				if chat, ok := c.state.GetChat(id); ok && strings.HasPrefix(chat.PhotoURL, "data:") {
+					thumbStr = chat.PhotoURL
+					break
+				}
+			}
 		}
 		if thumbStr != "" {
 			parts := strings.Split(thumbStr, ",")
-			if len(parts) == 2 {
-				if b, err := base64.StdEncoding.DecodeString(parts[1]); err == nil && len(b) > 0 {
-					return b, nil
-				}
+			raw := parts[len(parts)-1]
+			if b, err := base64.StdEncoding.DecodeString(raw); err == nil && len(b) > 0 {
+				return b, nil
 			}
 		}
 		return nil, errors.New("no avatar photo available for peer")
@@ -2049,14 +2107,60 @@ func (c *ClientController) DownloadAvatar(ctx context.Context, peerID int64, big
 		return data, nil
 	}
 
-	// 2. Resolve PhotoID and InputPeer
+	// 2. Try getting profile photo using chat.PhotoURL first
+	var photoURL string
 	var photoID int64
-	if ent, ok := c.state.GetEntity(normID); ok && ent.PhotoID != 0 {
-		photoID = ent.PhotoID
-	} else if chat, ok := c.state.GetChat(normID); ok && chat.PhotoID != 0 {
-		photoID = chat.PhotoID
+	for _, id := range []int64{normID, peerID} {
+		if chat, ok := c.state.GetChat(id); ok {
+			if photoURL == "" && chat.PhotoURL != "" {
+				photoURL = chat.PhotoURL
+			}
+			if photoID == 0 && chat.PhotoID != 0 {
+				photoID = chat.PhotoID
+			}
+		}
+		if ent, ok := c.state.GetEntity(id); ok {
+			if photoURL == "" && ent.PhotoURL != "" {
+				photoURL = ent.PhotoURL
+			}
+			if photoID == 0 && ent.PhotoID != 0 {
+				photoID = ent.PhotoID
+			}
+		}
 	}
 
+	if photoURL != "" {
+		if (strings.HasPrefix(photoURL, "http://") || strings.HasPrefix(photoURL, "https://")) && !strings.Contains(photoURL, "/api/avatar") {
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, photoURL, nil)
+			if err == nil {
+				client := &http.Client{Timeout: 5 * time.Second}
+				resp, err := client.Do(req)
+				if err == nil {
+					defer resp.Body.Close()
+					if resp.StatusCode == http.StatusOK {
+						if data, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024)); err == nil && len(data) > 0 {
+							_ = os.WriteFile(cacheFile, data, 0644)
+							return data, nil
+						}
+					}
+				}
+			}
+		} else if strings.HasPrefix(photoURL, "data:") {
+			parts := strings.Split(photoURL, ",")
+			if b, err := base64.StdEncoding.DecodeString(parts[len(parts)-1]); err == nil && len(b) > 0 {
+				if photoID == 0 || !big {
+					_ = os.WriteFile(cacheFile, b, 0644)
+					return b, nil
+				}
+			}
+		} else if !strings.HasPrefix(photoURL, "/api/") {
+			if data, err := os.ReadFile(photoURL); err == nil && len(data) > 0 {
+				return data, nil
+			}
+		}
+	}
+
+	// 3. If failed, use photoID and InputPeer
 	inputPeer, err := c.resolveInputPeer(ctx, normID)
 	if err == nil && inputPeer != nil && photoID != 0 {
 		loc := &tg.InputPeerPhotoFileLocation{
@@ -2081,7 +2185,7 @@ func (c *ClientController) DownloadAvatar(ctx context.Context, peerID int64, big
 		}
 	}
 
-	// 3. Fallback to StrippedThumb if direct MTProto download fails or photoID is missing
+	// 4. Fallback to StrippedThumb if direct MTProto download fails or photoID is missing
 	return getStrippedThumb()
 }
 

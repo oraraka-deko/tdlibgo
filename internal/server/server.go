@@ -72,6 +72,32 @@ func (s *Server) Start() error {
 	// Telegram Premium Global Post Search Endpoint
 	mux.HandleFunc("/api/search/posts", s.handleSearchGlobalPosts)
 
+	// Batch Downloader Endpoints
+	mux.HandleFunc("/api/downloader/tasks", s.handleDownloaderTasks)
+	mux.HandleFunc("/api/downloader/start", s.handleDownloaderStart)
+	mux.HandleFunc("/api/downloader/pause", s.handleDownloaderPause)
+	mux.HandleFunc("/api/downloader/resume", s.handleDownloaderResume)
+	mux.HandleFunc("/api/downloader/cancel", s.handleDownloaderCancel)
+	mux.HandleFunc("/api/downloader/delete", s.handleDownloaderDelete)
+
+	// Multi Uploader Endpoints (Supporting up to 4GB files)
+	mux.HandleFunc("/api/uploader/tasks", s.handleUploaderTasks)
+	mux.HandleFunc("/api/uploader/start", s.handleUploaderStart)
+	mux.HandleFunc("/api/uploader/upload-file", s.handleUploaderUploadFile)
+	mux.HandleFunc("/api/uploader/cancel", s.handleUploaderCancel)
+
+	// Indexer & Cache Endpoints
+	mux.HandleFunc("/api/indexer/start", s.handleIndexerStart)
+	mux.HandleFunc("/api/indexer/status", s.handleIndexerStatus)
+	mux.HandleFunc("/api/indexer/cancel", s.handleIndexerCancel)
+	mux.HandleFunc("/api/indexer/search", s.handleIndexerSearch)
+	mux.HandleFunc("/api/indexer/export", s.handleIndexerExport)
+	mux.HandleFunc("/api/cache/stats", s.handleCacheStats)
+	mux.HandleFunc("/api/cache/clear", s.handleCacheClear)
+
+	// Media Hub & Technical Inspector Endpoint
+	mux.HandleFunc("/api/media/inspect", s.handleMediaInspect)
+
 	// WebSocket Endpoint
 	mux.HandleFunc("/ws", s.handleWebSocket)
 
