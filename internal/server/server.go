@@ -98,6 +98,9 @@ func (s *Server) Start() error {
 	// Media Hub & Technical Inspector Endpoint
 	mux.HandleFunc("/api/media/inspect", s.handleMediaInspect)
 
+	// Voice / Audio Speech-to-Text Transcription Endpoint
+	mux.HandleFunc("/api/messages/transcribe", s.handleTranscribe)
+
 	// WebSocket Endpoint
 	mux.HandleFunc("/ws", s.handleWebSocket)
 
@@ -321,6 +324,19 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 				fmt.Printf("[SERVER] FetchHistory error for chat %d: %v\n", normChatID, err)
 			}
 			messages = s.state.GetMessages(normChatID, limit, offsetID)
+		}
+	}
+
+	// Populate cached transcriptions if available
+	if db := s.state.GetHistoryDB(); db != nil {
+		for _, m := range messages {
+			if m != nil && m.Media != nil && (m.Media.Type == "voice" || m.Media.Type == "audio") {
+				if m.Media.Transcription == "" {
+					if t, ok := db.GetTranscription(normChatID, m.ID); ok && t != "" {
+						m.Media.Transcription = t
+					}
+				}
+			}
 		}
 	}
 
@@ -966,3 +982,84 @@ func (s *Server) handleForwardMessages(w http.ResponseWriter, r *http.Request) {
 		"count":  len(ids),
 	})
 }
+
+// handleTranscribe handles on-demand speech-to-text transcription for voice and audio messages.
+func (s *Server) handleTranscribe(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
+		s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	var chatID int64
+	var messageID int
+
+	if r.Method == http.MethodGet {
+		chatIDStr := r.URL.Query().Get("chat_id")
+		msgIDStr := r.URL.Query().Get("message_id")
+		var err error
+		chatID, err = strconv.ParseInt(chatIDStr, 10, 64)
+		if err != nil {
+			s.writeError(w, http.StatusBadRequest, "invalid chat_id")
+			return
+		}
+		messageID, err = strconv.Atoi(msgIDStr)
+		if err != nil {
+			s.writeError(w, http.StatusBadRequest, "invalid message_id")
+			return
+		}
+	} else {
+		var req struct {
+			ChatID    int64 `json:"chat_id"`
+			MessageID int   `json:"message_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			s.writeError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		chatID = req.ChatID
+		messageID = req.MessageID
+	}
+
+	if chatID == 0 || messageID == 0 {
+		s.writeError(w, http.StatusBadRequest, "chat_id and message_id are required")
+		return
+	}
+
+	normChatID, _ := telegram.NormalizeChatID(chatID)
+
+	// Check if already transcribed
+	if tr := s.client.GetTranscriber(); tr != nil {
+		if cached, ok := tr.GetCachedTranscription(normChatID, messageID); ok && cached != "" {
+			s.writeJSON(w, http.StatusOK, map[string]interface{}{
+				"success":    true,
+				"chat_id":    normChatID,
+				"message_id": messageID,
+				"text":       cached,
+				"cached":     true,
+			})
+			return
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 180*time.Second)
+	defer cancel()
+
+	text, err := s.client.TranscribeMessage(ctx, normChatID, messageID)
+	if err != nil {
+		logger.Error("TRANSCRIBE", "TranscribeMessage failed for [%d:%d]: %v", normChatID, messageID, err)
+		s.writeError(w, http.StatusInternalServerError, fmt.Sprintf("Transcription error: %v", err))
+		return
+	}
+
+	// Update cached message in StateManager and broadcast
+	s.state.UpdateMessageTranscription(normChatID, messageID, text)
+
+	s.writeJSON(w, http.StatusOK, map[string]interface{}{
+		"success":    true,
+		"chat_id":    normChatID,
+		"message_id": messageID,
+		"text":       text,
+		"cached":     false,
+	})
+}
+

@@ -130,3 +130,36 @@ func TestHistoryDB_ChatsAndMessages(t *testing.T) {
 		t.Fatalf("Expected 0 messages after clear, got %d", afterClearCount)
 	}
 }
+
+func TestHistoryDB_Transcriptions(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "historydb_transcribe_test_*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	dbPath := filepath.Join(tempDir, "test.db")
+	db, err := OpenHistoryDB(dbPath)
+	if err != nil {
+		t.Fatalf("OpenHistoryDB failed: %v", err)
+	}
+	defer db.Close()
+
+	// Initially should not exist
+	text, found := db.GetTranscription(1001, 42)
+	if found || text != "" {
+		t.Fatalf("Expected not found, got %q (found=%v)", text, found)
+	}
+
+	// Save transcription
+	sampleText := "Hey there! I wanted to share some really cool news with you."
+	if err := db.SaveTranscription(1001, 42, sampleText); err != nil {
+		t.Fatalf("SaveTranscription failed: %v", err)
+	}
+
+	// Retrieve
+	text, found = db.GetTranscription(1001, 42)
+	if !found || text != sampleText {
+		t.Fatalf("Expected %q, got %q (found=%v)", sampleText, text, found)
+	}
+}

@@ -18,9 +18,10 @@ import (
 )
 
 var (
-	bucketChats    = []byte("chats")
-	bucketMessages = []byte("messages")
-	bucketMeta     = []byte("meta")
+	bucketChats          = []byte("chats")
+	bucketMessages       = []byte("messages")
+	bucketMeta           = []byte("meta")
+	bucketTranscriptions = []byte("transcriptions")
 )
 
 // HistoryDB manages local persistent caching for chats and messages using BoltDB.
@@ -45,7 +46,7 @@ func OpenHistoryDB(dbPath string) (*HistoryDB, error) {
 
 	// Ensure all required buckets exist
 	err = db.Update(func(tx *bbolt.Tx) error {
-		for _, bName := range [][]byte{bucketChats, bucketMessages, bucketMeta} {
+		for _, bName := range [][]byte{bucketChats, bucketMessages, bucketMeta, bucketTranscriptions} {
 			if _, err := tx.CreateBucketIfNotExists(bName); err != nil {
 				return err
 			}
@@ -473,3 +474,52 @@ func (h *HistoryDB) ClearAllMessages() error {
 		return err
 	})
 }
+
+// GetTranscription retrieves a saved voice/audio transcription for a message.
+func (h *HistoryDB) GetTranscription(chatID int64, messageID int) (string, bool) {
+	if h == nil || h.db == nil {
+		return "", false
+	}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	key := []byte(fmt.Sprintf("%d:%d", chatID, messageID))
+	var text string
+	var found bool
+	_ = h.db.View(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(bucketTranscriptions)
+		if b == nil {
+			return nil
+		}
+		val := b.Get(key)
+		if val != nil {
+			text = string(val)
+			found = true
+		}
+		return nil
+	})
+	return text, found
+}
+
+// SaveTranscription caches a voice/audio transcription for a message.
+func (h *HistoryDB) SaveTranscription(chatID int64, messageID int, text string) error {
+	if h == nil || h.db == nil {
+		return nil
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	key := []byte(fmt.Sprintf("%d:%d", chatID, messageID))
+	return h.db.Update(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(bucketTranscriptions)
+		if b == nil {
+			var err error
+			b, err = tx.CreateBucketIfNotExists(bucketTranscriptions)
+			if err != nil {
+				return err
+			}
+		}
+		return b.Put(key, []byte(text))
+	})
+}
+

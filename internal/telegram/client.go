@@ -62,6 +62,7 @@ type ClientController struct {
 	multiUploader   *services.MultiUploaderEngine
 	indexerService  *services.IndexerService
 	mediaHubService *services.MediaHubService
+	transcriber     *services.TranscriberService
 
 	codeChan     chan string
 	passwordChan chan string
@@ -73,7 +74,7 @@ type ClientController struct {
 
 // NewClientController creates a new MTProto client manager.
 func NewClientController(appID int, appHash, phone string, s *state.StateManager) *ClientController {
-	return &ClientController{
+	c := &ClientController{
 		appID:        appID,
 		appHash:      appHash,
 		phone:        phone,
@@ -81,6 +82,12 @@ func NewClientController(appID int, appHash, phone string, s *state.StateManager
 		codeChan:     make(chan string, 10),
 		passwordChan: make(chan string, 10),
 	}
+	if s != nil {
+		c.transcriber = services.NewTranscriberService(s.GetHistoryDB())
+	} else {
+		c.transcriber = services.NewTranscriberService(nil)
+	}
+	return c
 }
 
 // sessionFolder formats the folder name based on digits of the phone number.
@@ -267,6 +274,9 @@ func (c *ClientController) runClient(ctx context.Context) error {
 			c.multiUploader = services.NewMultiUploaderEngine(pool, c.api, c.state, filepath.Join(sessionDir, "upload_temp"))
 			c.indexerService = services.NewIndexerService(c.api, c.state.GetHistoryDB(), c.state, filepath.Join(sessionDir, "media_cache"), filepath.Join(sessionDir, "avatars"), filepath.Join(sessionDir, "history.db"))
 			c.mediaHubService = services.NewMediaHubService(c.api)
+			if c.transcriber != nil && c.state.GetHistoryDB() != nil {
+				c.transcriber.SetHistoryDB(c.state.GetHistoryDB())
+			}
 
 			// Populate initial dialogs and entity cache synchronously so chats & peers are immediately ready
 			fetchCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
@@ -1406,6 +1416,63 @@ func (c *ClientController) GetMediaHubService() *services.MediaHubService {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.mediaHubService
+}
+
+// GetTranscriber returns the speech-to-text service.
+func (c *ClientController) GetTranscriber() *services.TranscriberService {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.transcriber
+}
+
+// TranscribeMessage fetches or downloads audio for a message and transcribes it.
+func (c *ClientController) TranscribeMessage(ctx context.Context, chatID int64, messageID int) (string, error) {
+	if c.transcriber == nil {
+		return "", errors.New("transcriber service not initialized")
+	}
+
+	normChatID, _ := NormalizeChatID(chatID)
+
+	// Check if already transcribed
+	if text, ok := c.transcriber.GetCachedTranscription(normChatID, messageID); ok && text != "" {
+		return text, nil
+	}
+
+	// 1. Check if media is already cached on disk by downloader
+	var audioPath string
+	if c.downloader != nil {
+		if path, ok := c.downloader.IsCached(normChatID, messageID); ok {
+			audioPath = path
+		} else {
+			// Download via dedicated DC pool
+			media, _, err := c.ResolveMedia(ctx, normChatID, messageID)
+			if err == nil && media != nil && media.InputFileLoc != nil {
+				path, err := c.downloader.FetchOrDownloadWithDC(ctx, normChatID, messageID, media.InputFileLoc, media.DC, media.Size)
+				if err == nil {
+					audioPath = path
+				}
+			}
+		}
+	}
+
+	// 2. Fallback to direct download to temporary file if not cached
+	if audioPath == "" {
+		tmpFile, err := os.CreateTemp("", fmt.Sprintf("tg_voice_%d_%d_*.ogg", normChatID, messageID))
+		if err != nil {
+			return "", fmt.Errorf("create temp audio file: %w", err)
+		}
+		tmpPath := tmpFile.Name()
+		defer os.Remove(tmpPath)
+
+		_, _, err = c.DownloadMedia(ctx, normChatID, messageID, tmpFile)
+		_ = tmpFile.Close()
+		if err != nil {
+			return "", fmt.Errorf("failed to download audio for transcription: %w", err)
+		}
+		audioPath = tmpPath
+	}
+
+	return c.transcriber.TranscribeAudioFile(ctx, normChatID, messageID, audioPath)
 }
 
 // ResolveInputPeer exposes peer resolution for services.

@@ -618,6 +618,36 @@
         handleMessageReactions(msg.payload);
         break;
 
+      case 'message_transcription': {
+        const { chat_id, message_id, transcription } = msg.payload;
+        if (state.messages && state.messages[chat_id]) {
+          const m = state.messages[chat_id].find((item) => item.id === message_id);
+          if (m && m.media) {
+            m.media.transcription = transcription;
+          }
+        }
+        const wrap = document.getElementById(`transcription-wrap-${message_id}`);
+        if (wrap) {
+          wrap.innerHTML = `<div class="voice-transcription-text">${escapeHTML(transcription)}</div>`;
+          wrap.classList.add('expanded');
+          const parentVoice = wrap.closest('.message-media-voice');
+          if (parentVoice) {
+            const btn = parentVoice.querySelector('.voice-transcribe-btn');
+            if (btn) {
+              const iconTranscribe = btn.querySelector('.icon-transcribe');
+              const iconCollapse = btn.querySelector('.icon-collapse');
+              const iconSpinner = btn.querySelector('.voice-transcribe-spinner');
+              if (iconSpinner) iconSpinner.style.display = 'none';
+              if (iconTranscribe) iconTranscribe.style.display = 'none';
+              if (iconCollapse) iconCollapse.style.display = 'block';
+              btn.title = 'Hide transcription';
+              btn.classList.add('has-text');
+            }
+          }
+        }
+        break;
+      }
+
       case 'system_log':
         handleIncomingSystemLog(msg.payload);
         break;
@@ -1887,26 +1917,67 @@
           case 'audio': {
             const voiceContainer = document.createElement('div');
             voiceContainer.className = 'message-media-voice';
+
+            // Generate multi-bar waveform simulating Telegram voice note amplitude
+            const barHeights = [
+              6, 12, 18, 10, 5, 14, 20, 16, 8, 14, 18, 12, 7, 10, 16, 22, 15, 9, 13, 17, 11, 5, 14, 19, 13, 7, 11, 5
+            ];
+            let waveformBarsHtml = '';
+            for (let i = 0; i < barHeights.length; i++) {
+              waveformBarsHtml += `<span class="voice-bar" style="height: ${barHeights[i]}px;" data-index="${i}"></span>`;
+            }
+
+            const isTranscribed = Boolean(m.transcription);
             voiceContainer.innerHTML = `
               <audio src="${m.url}" preload="none" id="audio-${msg.id}"></audio>
-              <button class="voice-play-btn" title="Play audio">
-                <svg viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
-              </button>
-              <div class="voice-waveform">
-                <span class="voice-bar" style="height: 10px;"></span>
-                <span class="voice-bar" style="height: 18px;"></span>
-                <span class="voice-bar" style="height: 8px;"></span>
-                <span class="voice-bar" style="height: 22px;"></span>
-                <span class="voice-bar" style="height: 14px;"></span>
-                <span class="voice-bar" style="height: 12px;"></span>
-                <span class="voice-bar" style="height: 16px;"></span>
+              <div class="voice-player-main">
+                <button class="voice-play-btn" title="Play audio" aria-label="Play">
+                  <svg viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+                </button>
+                <div class="voice-waveform-area">
+                  <div class="voice-waveform">
+                    ${waveformBarsHtml}
+                  </div>
+                  <div class="voice-duration">${formatDuration(m.duration || 0)}</div>
+                </div>
+                <button class="voice-transcribe-btn ${isTranscribed ? 'has-text' : ''}" title="${isTranscribed ? 'Hide transcription' : 'Transcribe voice to text'}" aria-label="Transcribe">
+                  <svg class="icon-transcribe" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="${isTranscribed ? 'display: none;' : ''}">
+                    <path d="M3 12h7m-3-3l3 3-3 3" />
+                    <path d="M14 18l3.5-11 3.5 11M15.2 14h4.6" />
+                  </svg>
+                  <svg class="icon-collapse" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="${isTranscribed ? '' : 'display: none;'}">
+                    <polyline points="18 15 12 9 6 15"></polyline>
+                  </svg>
+                  <svg class="voice-transcribe-spinner" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="display: none;">
+                    <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2.5" stroke-dasharray="28" stroke-dashoffset="10" stroke-linecap="round"></circle>
+                  </svg>
+                </button>
               </div>
-              <span class="voice-duration">${formatDuration(m.duration)}</span>
+              <div class="voice-transcription-wrap ${isTranscribed ? 'expanded' : ''}" id="transcription-wrap-${msg.id}">
+                <div class="voice-transcription-text">${escapeHTML(m.transcription || '')}</div>
+              </div>
             `;
+
             const audio = voiceContainer.querySelector('audio');
             const playBtn = voiceContainer.querySelector('.voice-play-btn');
-            playBtn.addEventListener('click', () => {
+            const durationEl = voiceContainer.querySelector('.voice-duration');
+            const bars = voiceContainer.querySelectorAll('.voice-bar');
+            const transcribeBtn = voiceContainer.querySelector('.voice-transcribe-btn');
+            const transcriptionWrap = voiceContainer.querySelector('.voice-transcription-wrap');
+            const iconTranscribe = transcribeBtn.querySelector('.icon-transcribe');
+            const iconCollapse = transcribeBtn.querySelector('.icon-collapse');
+            const iconSpinner = transcribeBtn.querySelector('.voice-transcribe-spinner');
+
+            // Play / Pause Logic
+            playBtn.addEventListener('click', (e) => {
+              e.stopPropagation();
               if (audio.paused) {
+                document.querySelectorAll('audio').forEach((a) => {
+                  if (a !== audio && !a.paused) {
+                    a.pause();
+                    a.dispatchEvent(new Event('pause'));
+                  }
+                });
                 audio.play();
                 playBtn.innerHTML = `<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></svg>`;
               } else {
@@ -1914,9 +1985,98 @@
                 playBtn.innerHTML = `<svg viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>`;
               }
             });
-            audio.addEventListener('ended', () => {
+
+            audio.addEventListener('timeupdate', () => {
+              if (audio.duration && !isNaN(audio.duration)) {
+                durationEl.textContent = formatDuration(Math.floor(audio.currentTime));
+                const progress = audio.currentTime / audio.duration;
+                const playedCount = Math.floor(progress * bars.length);
+                bars.forEach((b, idx) => {
+                  if (idx <= playedCount) {
+                    b.classList.add('played');
+                  } else {
+                    b.classList.remove('played');
+                  }
+                });
+              }
+            });
+
+            audio.addEventListener('pause', () => {
               playBtn.innerHTML = `<svg viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>`;
             });
+
+            audio.addEventListener('ended', () => {
+              playBtn.innerHTML = `<svg viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>`;
+              durationEl.textContent = formatDuration(m.duration || 0);
+              bars.forEach((b) => b.classList.remove('played'));
+            });
+
+            // Transcribe Button Click Logic (speech-to-text toggle & API request)
+            transcribeBtn.addEventListener('click', async (e) => {
+              e.stopPropagation();
+
+              // 1. If already expanded, collapse it
+              if (transcriptionWrap.classList.contains('expanded')) {
+                transcriptionWrap.classList.remove('expanded');
+                iconCollapse.style.display = 'none';
+                iconTranscribe.style.display = 'block';
+                transcribeBtn.title = 'Show transcription';
+                return;
+              }
+
+              // 2. If already transcribed and has text, expand immediately
+              const existingTextEl = transcriptionWrap.querySelector('.voice-transcription-text');
+              if (m.transcription || (existingTextEl && existingTextEl.textContent.trim() !== '')) {
+                transcriptionWrap.classList.add('expanded');
+                iconTranscribe.style.display = 'none';
+                iconCollapse.style.display = 'block';
+                transcribeBtn.title = 'Hide transcription';
+                return;
+              }
+
+              // 3. Otherwise request transcription from backend
+              iconTranscribe.style.display = 'none';
+              iconCollapse.style.display = 'none';
+              iconSpinner.style.display = 'block';
+              transcribeBtn.disabled = true;
+
+              // Display animated loading state
+              transcriptionWrap.innerHTML = `
+                <div class="voice-transcribing-hint">
+                  <span class="voice-transcribing-pulse"></span>
+                  <span>Transcribing voice note...</span>
+                </div>
+              `;
+              transcriptionWrap.classList.add('expanded');
+
+              try {
+                const res = await fetch(`/api/messages/transcribe?chat_id=${msg.chat_id}&message_id=${msg.id}`);
+                const data = await res.json();
+                if (data.success && data.text) {
+                  m.transcription = data.text;
+                  transcriptionWrap.innerHTML = `<div class="voice-transcription-text">${escapeHTML(data.text)}</div>`;
+                  iconSpinner.style.display = 'none';
+                  iconCollapse.style.display = 'block';
+                  transcribeBtn.title = 'Hide transcription';
+                  transcribeBtn.classList.add('has-text');
+                } else {
+                  throw new Error(data.error || 'Transcription failed');
+                }
+              } catch (err) {
+                console.error('Transcription error:', err);
+                transcriptionWrap.innerHTML = `
+                  <div class="voice-transcribing-hint" style="color: var(--danger);">
+                    <span>${escapeHTML(err.message || 'Transcription unavailable')}</span>
+                  </div>
+                `;
+                iconSpinner.style.display = 'none';
+                iconTranscribe.style.display = 'block';
+                transcribeBtn.title = 'Retry transcription';
+              } finally {
+                transcribeBtn.disabled = false;
+              }
+            });
+
             bubble.appendChild(voiceContainer);
             break;
           }

@@ -117,7 +117,8 @@ type MessageMedia struct {
 	Duration   int       `json:"duration,omitempty"`    // in seconds for video/audio
 	AltEmoji   string    `json:"alt_emoji,omitempty"`   // sticker alt emoji
 	IsAnimated bool      `json:"is_animated,omitempty"` // animated sticker or gif
-	Poll       *PollInfo `json:"poll,omitempty"`        // poll details if Type == "poll"
+	Poll          *PollInfo `json:"poll,omitempty"`          // poll details if Type == "poll"
+	Transcription string    `json:"transcription,omitempty"` // speech-to-text transcription for voice/audio
 }
 
 // StarGiftAttribute describes unique collectible gift attribute (model, pattern, backdrop).

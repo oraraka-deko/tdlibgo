@@ -1318,18 +1318,27 @@ input:focus {
   height: 18px;
 }
 
-/* Voice Message */
+/* Voice Message Container */
 .message-media-voice {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 4px 2px;
+  min-width: 250px;
+  max-width: 380px;
+  width: 100%;
+}
+
+.voice-player-main {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 6px 4px;
-  min-width: 200px;
+  width: 100%;
 }
 
 .voice-play-btn {
-  width: 36px;
-  height: 36px;
+  width: 40px;
+  height: 40px;
   border-radius: 50%;
   background: var(--accent);
   color: #ffffff;
@@ -1338,26 +1347,188 @@ input:focus {
   justify-content: center;
   cursor: pointer;
   flex-shrink: 0;
+  border: none;
+  transition: transform 0.15s, background 0.15s;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+.message-outgoing .voice-play-btn {
+  background: #ffffff;
+  color: var(--bubble-out);
+}
+
+.voice-play-btn:hover {
+  transform: scale(1.05);
+}
+
+.voice-play-btn svg {
+  width: 20px;
+  height: 20px;
+}
+
+.voice-waveform-area {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
 }
 
 .voice-waveform {
-  flex: 1;
-  height: 24px;
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 2.5px;
+  height: 22px;
+  overflow: hidden;
+  cursor: pointer;
 }
 
 .voice-bar {
-  width: 3px;
+  width: 2.5px;
   background: var(--accent);
   border-radius: 2px;
-  opacity: 0.7;
+  opacity: 0.6;
+  flex-shrink: 0;
+  transition: opacity 0.15s, background 0.15s;
+}
+
+.message-outgoing .voice-bar {
+  background: #ffffff;
+  opacity: 0.6;
+}
+
+.voice-bar.played {
+  opacity: 1;
 }
 
 .voice-duration {
-  font-size: 11px;
+  font-size: 11.5px;
   color: var(--text-secondary);
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+}
+
+.message-outgoing .voice-duration {
+  color: rgba(255, 255, 255, 0.75);
+}
+
+/* Transcribe Speech-to-Text Button */
+.voice-transcribe-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 30px;
+  border-radius: 15px;
+  background: var(--accent-light);
+  color: var(--accent);
+  border: none;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.2s, transform 0.15s, color 0.15s;
+  padding: 0;
+  margin-left: 4px;
+}
+
+.message-outgoing .voice-transcribe-btn {
+  background: rgba(255, 255, 255, 0.22);
+  color: #ffffff;
+}
+
+.voice-transcribe-btn:hover {
+  background: rgba(135, 116, 225, 0.28);
+  transform: scale(1.06);
+}
+
+.message-outgoing .voice-transcribe-btn:hover {
+  background: rgba(255, 255, 255, 0.32);
+}
+
+.voice-transcribe-btn:active {
+  transform: scale(0.96);
+}
+
+.voice-transcribe-btn svg {
+  width: 17px;
+  height: 17px;
+}
+
+.voice-transcribe-spinner {
+  animation: voice-spin 0.85s linear infinite;
+}
+
+@keyframes voice-spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+/* Transcribed Text Accordion Area */
+.voice-transcription-wrap {
+  overflow: hidden;
+  transition: max-height 0.25s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.2s ease, margin 0.2s ease, padding 0.2s ease;
+  max-height: 0;
+  opacity: 0;
+  border-top: 1px solid transparent;
+  padding-top: 0;
+  margin-top: 0;
+}
+
+.voice-transcription-wrap.expanded {
+  max-height: 800px;
+  opacity: 1;
+  border-top: 1px solid rgba(140, 140, 140, 0.18);
+  padding-top: 8px;
+  margin-top: 4px;
+}
+
+.message-outgoing .voice-transcription-wrap.expanded {
+  border-top: 1px solid rgba(255, 255, 255, 0.18);
+}
+
+.voice-transcription-text {
+  font-size: 14.5px;
+  line-height: 1.45;
+  color: var(--text-primary);
+  word-break: break-word;
+  white-space: pre-wrap;
+  user-select: text;
+}
+
+.message-outgoing .voice-transcription-text {
+  color: #ffffff;
+}
+
+.voice-transcribing-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  font-style: italic;
+  padding: 4px 0;
+}
+
+.message-outgoing .voice-transcribing-hint {
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.voice-transcribing-pulse {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: voice-pulse 1.2s ease-in-out infinite;
+}
+
+.message-outgoing .voice-transcribing-pulse {
+  background: #ffffff;
+}
+
+@keyframes voice-pulse {
+  0%, 100% { transform: scale(0.8); opacity: 0.5; }
+  50% { transform: scale(1.3); opacity: 1; }
 }
 
 /* Reply Dock Bar */

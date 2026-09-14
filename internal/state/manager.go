@@ -458,6 +458,39 @@ func (s *StateManager) UpdateMessageReactions(chatID int64, msgID int, reactions
 	})
 }
 
+// UpdateMessageTranscription updates transcription on a message and broadcasts.
+func (s *StateManager) UpdateMessageTranscription(chatID int64, msgID int, text string) {
+	s.mu.Lock()
+	history := s.messages[chatID]
+	var target *models.Message
+	for _, m := range history {
+		if m.ID == msgID {
+			if m.Media != nil {
+				m.Media.Transcription = text
+			}
+			target = m
+			break
+		}
+	}
+	s.mu.Unlock()
+
+	s.Broadcast(models.WSMessage{
+		Type: "message_transcription",
+		Payload: map[string]interface{}{
+			"chat_id":       chatID,
+			"message_id":    msgID,
+			"transcription": text,
+		},
+	})
+
+	if target != nil {
+		s.Broadcast(models.WSMessage{
+			Type:    "edit_message",
+			Payload: target,
+		})
+	}
+}
+
 // DeleteMessages removes message IDs from chat history.
 func (s *StateManager) DeleteMessages(chatID int64, ids []int) {
 	idMap := make(map[int]bool, len(ids))
