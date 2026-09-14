@@ -4206,3 +4206,238 @@ input:focus {
   display: flex;
   justify-content: flex-end;
 }
+
+/* ==========================================================================
+   OAuth2 / JWT Stateless Session & Gate Styles
+   ========================================================================== */
+
+.oauth-gate-card {
+  max-width: 440px;
+  width: 90%;
+  animation: modalPop 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5), 0 0 30px rgba(51, 144, 236, 0.15);
+}
+
+.oauth-logo-glow {
+  background: linear-gradient(135deg, #2481cc, #65aadd);
+  box-shadow: 0 0 24px rgba(36, 129, 204, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.oauth-logo-glow svg {
+  width: 34px;
+  height: 34px;
+  color: #ffffff;
+}
+
+.oauth-providers-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 24px;
+  margin-bottom: 20px;
+}
+
+.btn-oauth {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  width: 100%;
+  padding: 13px 20px;
+  font-size: 15px;
+  font-weight: 600;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  outline: none;
+  border: 1px solid transparent;
+}
+
+.oauth-icon {
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+}
+
+/* Google OAuth Button */
+.btn-google {
+  background: #ffffff;
+  color: #1f1f1f;
+  border: 1px solid #dadce0;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.08);
+}
+
+.btn-google:hover {
+  background: #f8fafd;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  transform: translateY(-1px);
+}
+
+.btn-google:active {
+  background: #eeeeee;
+  transform: translateY(0);
+}
+
+/* GitHub OAuth Button */
+.btn-github {
+  background: #24292e;
+  color: #ffffff;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.15);
+}
+
+.btn-github:hover {
+  background: #2f363d;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
+  transform: translateY(-1px);
+}
+
+.btn-github:active {
+  background: #1b1f23;
+  transform: translateY(0);
+}
+
+/* OAuth Footer Badge */
+.oauth-footer {
+  margin-top: 16px;
+  text-align: center;
+}
+
+.oauth-badge-stateless {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-secondary, #888888);
+  letter-spacing: 0.3px;
+  display: inline-block;
+  opacity: 0.85;
+}
+
+/* Drawer OAuth Security Box */
+.drawer-oauth-box {
+  margin: 12px 16px;
+  padding: 12px 14px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.oauth-box-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.oauth-box-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: var(--text-secondary, #999999);
+}
+
+.badge-oauth {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(51, 144, 236, 0.2);
+  color: #3390ec;
+  border: 1px solid rgba(51, 144, 236, 0.35);
+}
+
+.oauth-box-user {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary, #ffffff);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.btn-text-danger {
+  background: none;
+  border: none;
+  color: #ff595a;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 4px 0 0 0;
+  text-align: left;
+  transition: opacity 0.15s;
+}
+
+.btn-text-danger:hover {
+  text-decoration: underline;
+  opacity: 0.85;
+}
+
+/* ==========================================================================
+   TDL Scheduled Queue Manager Styles
+   ========================================================================== */
+.queue-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border-color, rgba(255, 255, 255, 0.08));
+  border-radius: 8px;
+}
+
+.queue-stats-summary {
+  font-size: 13px;
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.queue-days-selector {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 6px;
+  background: var(--bg-input, rgba(0, 0, 0, 0.2));
+  padding: 10px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color, rgba(255, 255, 255, 0.08));
+}
+
+.queue-days-selector label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  cursor: pointer;
+  color: var(--text-primary);
+  user-select: none;
+}
+
+.queue-days-selector input[type="checkbox"] {
+  accent-color: var(--accent, #3390ec);
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+
+.switch-label {
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  user-select: none;
+}
+
+.switch-label input[type="checkbox"] {
+  accent-color: var(--accent, #3390ec);
+  width: 18px;
+  height: 18px;
+  margin-right: 8px;
+}
+
+

@@ -15,8 +15,10 @@ import (
 
 	"github.com/coder/websocket"
 
+	"tdlibgo/internal/auth"
 	"tdlibgo/internal/logger"
 	"tdlibgo/internal/models"
+	"tdlibgo/internal/services"
 	"tdlibgo/internal/state"
 	"tdlibgo/internal/telegram"
 )
@@ -29,15 +31,19 @@ type Server struct {
 	srv          *http.Server
 	webFS        embed.FS
 	historyCache sync.Map
+	oauth        *auth.OAuthManager
+	queue        *services.QueueManager
 }
 
 // NewServer initializes a new Server.
-func NewServer(port int, s *state.StateManager, client *telegram.ClientController, webFS embed.FS) *Server {
+func NewServer(port int, s *state.StateManager, client *telegram.ClientController, webFS embed.FS, oauthMgr *auth.OAuthManager, qm *services.QueueManager) *Server {
 	return &Server{
 		port:   port,
 		state:  s,
 		client: client,
 		webFS:  webFS,
+		oauth:  oauthMgr,
+		queue:  qm,
 	}
 }
 
@@ -104,7 +110,24 @@ func (s *Server) Start() error {
 	// WebSocket Endpoint
 	mux.HandleFunc("/ws", s.handleWebSocket)
 
-	// Embedded Static Frontend
+	// Queue Manager Endpoints
+	mux.HandleFunc("/api/queue/tasks", s.handleQueueTasks)
+	mux.HandleFunc("/api/queue/add", s.handleQueueAdd)
+	mux.HandleFunc("/api/queue/pause", s.handleQueuePause)
+	mux.HandleFunc("/api/queue/resume", s.handleQueueResume)
+	mux.HandleFunc("/api/queue/delete", s.handleQueueDelete)
+	mux.HandleFunc("/api/queue/config", s.handleQueueConfig)
+
+	if s.queue != nil {
+		s.queue.RegisterListener(func(task *services.QueueTask) {
+			s.state.Broadcast(models.WSMessage{
+				Type:    "queue_task_update",
+				Payload: task,
+			})
+		})
+	}
+
+	// Embedded Static Frontend & Admin SPA
 	webSub, err := fs.Sub(s.webFS, "web")
 	if err != nil {
 		return fmt.Errorf("failed to open embedded web directory: %w", err)
@@ -112,12 +135,41 @@ func (s *Server) Start() error {
 	fileServer := http.FileServer(http.FS(webSub))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		if strings.HasPrefix(r.URL.Path, "/admin") {
+			relPath := strings.TrimPrefix(r.URL.Path, "/")
+			if f, err := webSub.Open(relPath); err == nil {
+				_ = f.Close()
+				fileServer.ServeHTTP(w, r)
+				return
+			}
+			// SPA fallback: return web/admin/index.html
+			data, err := fs.ReadFile(webSub, "admin/index.html")
+			if err == nil {
+				w.Header().Set("Content-Type", "text/html; charset=utf-8")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write(data)
+				return
+			}
+		}
 		fileServer.ServeHTTP(w, r)
 	})
 
+	// OAuth2 / JWT Stateless Session Endpoints
+	mux.HandleFunc("/api/auth/config", s.handleOAuthConfig)
+	mux.HandleFunc("/api/auth/session", s.handleOAuthSession)
+	mux.HandleFunc("/api/auth/refresh", s.handleOAuthRefresh)
+	mux.HandleFunc("/api/auth/oauth/logout", s.handleOAuthLogout)
+	mux.HandleFunc("/oauth/v1/redirect/res", s.handleOAuthRedirectRes)
+
+	if s.oauth != nil {
+		authRoutes, avaRoutes := s.oauth.Handlers()
+		mux.Handle("/auth/", authRoutes)
+		mux.Handle("/avatar/", avaRoutes)
+	}
+
 	s.srv = &http.Server{
 		Addr:    fmt.Sprintf(":%d", s.port),
-		Handler: s.corsMiddleware(mux),
+		Handler: s.corsMiddleware(s.authGuardMiddleware(mux)),
 	}
 
 	fmt.Printf("[HTTP] Telegram Web client listening at: http://localhost:%d\n", s.port)
@@ -137,13 +189,126 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-JWT, X-XSRF-TOKEN")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// authGuardMiddleware enforces OAuth authentication on private endpoints when OAuth is enabled.
+func (s *Server) authGuardMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.oauth == nil || !s.oauth.Enabled() {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		p := r.URL.Path
+		// Whitelisted routes: static files, authentication routes, session checking, callbacks, admin UI
+		if p == "/" || strings.HasPrefix(p, "/auth/") || strings.HasPrefix(p, "/avatar/") ||
+			strings.HasPrefix(p, "/oauth/") || strings.HasPrefix(p, "/admin") || p == "/api/auth/config" || p == "/api/auth/session" ||
+			p == "/api/auth/refresh" || p == "/api/auth/oauth/logout" ||
+			strings.HasSuffix(p, ".js") || strings.HasSuffix(p, ".css") || strings.HasSuffix(p, ".png") ||
+			strings.HasSuffix(p, ".svg") || strings.HasSuffix(p, ".ico") || strings.HasSuffix(p, ".woff2") {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		s.oauth.Middleware(next).ServeHTTP(w, r)
+	})
+}
+
+// handleOAuthConfig returns the OAuth status and active providers.
+func (s *Server) handleOAuthConfig(w http.ResponseWriter, r *http.Request) {
+	enabled := s.oauth != nil && s.oauth.Enabled()
+	var providers []string
+	if s.oauth != nil {
+		providers = s.oauth.AvailableProviders()
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"auth_enabled": enabled,
+		"providers":    providers,
+	})
+}
+
+// handleOAuthSession verifies current browser session (via HttpOnly refresh cookie)
+// and returns user profile along with a short-lived access token for JS memory.
+func (s *Server) handleOAuthSession(w http.ResponseWriter, r *http.Request) {
+	if s.oauth == nil || !s.oauth.Enabled() {
+		s.writeJSON(w, http.StatusOK, map[string]any{
+			"auth_enabled":  false,
+			"authenticated": true,
+		})
+		return
+	}
+
+	accessToken, user, ttl, err := s.oauth.RefreshSession(w, r)
+	if err != nil {
+		s.writeJSON(w, http.StatusOK, map[string]any{
+			"auth_enabled":  true,
+			"authenticated": false,
+			"providers":     s.oauth.AvailableProviders(),
+		})
+		return
+	}
+
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"auth_enabled":  true,
+		"authenticated": true,
+		"user": map[string]any{
+			"id":      user.ID,
+			"name":    user.Name,
+			"picture": user.Picture,
+		},
+		"access_token": accessToken,
+		"expires_in":   ttl,
+	})
+}
+
+// handleOAuthRefresh issues a new short-lived access token using the HttpOnly refresh token cookie.
+func (s *Server) handleOAuthRefresh(w http.ResponseWriter, r *http.Request) {
+	if s.oauth == nil || !s.oauth.Enabled() {
+		s.writeError(w, http.StatusBadRequest, "OAuth is not enabled")
+		return
+	}
+
+	accessToken, user, ttl, err := s.oauth.RefreshSession(w, r)
+	if err != nil {
+		s.writeError(w, http.StatusUnauthorized, "Session expired or invalid: "+err.Error())
+		return
+	}
+
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"access_token": accessToken,
+		"expires_in":   ttl,
+		"user": map[string]any{
+			"id":      user.ID,
+			"name":    user.Name,
+			"picture": user.Picture,
+		},
+	})
+}
+
+// handleOAuthLogout logs out of the OAuth session by invalidating the refresh cookie.
+func (s *Server) handleOAuthLogout(w http.ResponseWriter, r *http.Request) {
+	if s.oauth != nil {
+		s.oauth.Logout(w)
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true,
+	})
+}
+
+// handleOAuthRedirectRes handles Google/GitHub callback at /oauth/v1/redirect/res.
+func (s *Server) handleOAuthRedirectRes(w http.ResponseWriter, r *http.Request) {
+	if s.oauth == nil {
+		http.Error(w, "OAuth is not configured", http.StatusNotFound)
+		return
+	}
+	s.oauth.HandleRedirectRes(w, r)
 }
 
 func (s *Server) writeJSON(w http.ResponseWriter, status int, data interface{}) {
@@ -756,6 +921,30 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				_ = s.client.SendReaction(reactCtx, p.ChatID, p.MsgID, p.Reaction)
 				rCancel()
 			}
+
+		case "queue_pause":
+			var p struct {
+				ID string `json:"id"`
+			}
+			if err := json.Unmarshal(cmd.Payload, &p); err == nil && s.queue != nil && p.ID != "" {
+				_, _ = s.queue.PauseTask(p.ID)
+			}
+
+		case "queue_resume":
+			var p struct {
+				ID string `json:"id"`
+			}
+			if err := json.Unmarshal(cmd.Payload, &p); err == nil && s.queue != nil && p.ID != "" {
+				_, _ = s.queue.ResumeTask(p.ID)
+			}
+
+		case "queue_delete":
+			var p struct {
+				ID string `json:"id"`
+			}
+			if err := json.Unmarshal(cmd.Payload, &p); err == nil && s.queue != nil && p.ID != "" {
+				_, _ = s.queue.DeleteTask(p.ID)
+			}
 		}
 	}
 }
@@ -1061,5 +1250,141 @@ func (s *Server) handleTranscribe(w http.ResponseWriter, r *http.Request) {
 		"text":       text,
 		"cached":     false,
 	})
+}
+
+// handleQueueTasks returns all tasks in the queue.
+func (s *Server) handleQueueTasks(w http.ResponseWriter, r *http.Request) {
+	if s.queue == nil {
+		s.writeJSON(w, http.StatusOK, map[string]interface{}{"tasks": []any{}, "config": nil})
+		return
+	}
+	s.writeJSON(w, http.StatusOK, map[string]interface{}{
+		"tasks":  s.queue.ListTasks(),
+		"config": s.queue.GetConfig(),
+	})
+}
+
+// handleQueueAdd adds a task to the queue.
+func (s *Server) handleQueueAdd(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if s.queue == nil {
+		s.writeError(w, http.StatusServiceUnavailable, "queue manager not initialized")
+		return
+	}
+	var task services.QueueTask
+	if err := json.NewDecoder(r.Body).Decode(&task); err != nil {
+		s.writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	created, err := s.queue.AddTask(task)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.writeJSON(w, http.StatusOK, created)
+}
+
+// handleQueuePause pauses a queue task.
+func (s *Server) handleQueuePause(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if s.queue == nil {
+		s.writeError(w, http.StatusServiceUnavailable, "queue manager not initialized")
+		return
+	}
+	var req struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID == "" {
+		s.writeError(w, http.StatusBadRequest, "id is required")
+		return
+	}
+	ok, err := s.queue.PauseTask(req.ID)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.writeJSON(w, http.StatusOK, map[string]bool{"success": ok})
+}
+
+// handleQueueResume resumes a paused task.
+func (s *Server) handleQueueResume(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if s.queue == nil {
+		s.writeError(w, http.StatusServiceUnavailable, "queue manager not initialized")
+		return
+	}
+	var req struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID == "" {
+		s.writeError(w, http.StatusBadRequest, "id is required")
+		return
+	}
+	ok, err := s.queue.ResumeTask(req.ID)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.writeJSON(w, http.StatusOK, map[string]bool{"success": ok})
+}
+
+// handleQueueDelete deletes a task from the queue.
+func (s *Server) handleQueueDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if s.queue == nil {
+		s.writeError(w, http.StatusServiceUnavailable, "queue manager not initialized")
+		return
+	}
+	var req struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID == "" {
+		s.writeError(w, http.StatusBadRequest, "id is required")
+		return
+	}
+	ok, err := s.queue.DeleteTask(req.ID)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.writeJSON(w, http.StatusOK, map[string]bool{"success": ok})
+}
+
+// handleQueueConfig gets or sets the schedule and bandwidth limits.
+func (s *Server) handleQueueConfig(w http.ResponseWriter, r *http.Request) {
+	if s.queue == nil {
+		s.writeError(w, http.StatusServiceUnavailable, "queue manager not initialized")
+		return
+	}
+	if r.Method == http.MethodGet {
+		s.writeJSON(w, http.StatusOK, s.queue.GetConfig())
+		return
+	}
+	if r.Method == http.MethodPost {
+		var cfg services.QueueScheduleConfig
+		if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+			s.writeError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		if err := s.queue.UpdateConfig(cfg); err != nil {
+			s.writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		s.writeJSON(w, http.StatusOK, s.queue.GetConfig())
+		return
+	}
+	s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 }
 

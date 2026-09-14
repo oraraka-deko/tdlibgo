@@ -122,8 +122,18 @@ func (s *DownloaderService) FetchOrDownloadWithDC(
 	start := time.Now()
 	logger.Download("Downloading media [%d:%d] (DC %d, %d bytes) via tdl/core multi-DC pool...", chatID, messageID, dc, size)
 
-	// Execute chunked download using detached context (180s)
-	dlCtx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	// Dynamically scale timeout based on file size (allow down to ~150 KB/s transfer rate + buffer)
+	timeout := 180 * time.Second
+	if size > 0 {
+		calcSec := (size / (150 * 1024)) + 180
+		if calcSec > 180 {
+			timeout = time.Duration(calcSec) * time.Second
+			if timeout > 3*time.Hour {
+				timeout = 3 * time.Hour
+			}
+		}
+	}
+	dlCtx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	var client *tg.Client

@@ -18,11 +18,64 @@
     replyingTo: null, // { id, sender, text }
   };
 
+  // OAuth2 / JWT Stateless Session state (kept strictly in memory)
+  let oauthAccessToken = null;
+  let oauthUser = null;
+  let oauthRefreshTimer = null;
+  let oauthEnabled = false;
+
+  const originalFetch = window.fetch.bind(window);
+
+  // Global fetch interceptor to inject in-memory access token and refresh on 401
+  window.fetch = async function (input, init = {}) {
+    init.headers = init.headers || {};
+    if (oauthAccessToken) {
+      if (init.headers instanceof Headers) {
+        init.headers.set('Authorization', 'Bearer ' + oauthAccessToken);
+        init.headers.set('X-JWT', oauthAccessToken);
+      } else if (Array.isArray(init.headers)) {
+        init.headers.push(['Authorization', 'Bearer ' + oauthAccessToken]);
+        init.headers.push(['X-JWT', oauthAccessToken]);
+      } else {
+        init.headers['Authorization'] = 'Bearer ' + oauthAccessToken;
+        init.headers['X-JWT'] = oauthAccessToken;
+      }
+    }
+    const res = await originalFetch(input, init);
+    if (res.status === 401 && oauthEnabled) {
+      const url = typeof input === 'string' ? input : (input && input.url ? input.url : '');
+      if (!url.includes('/api/auth/session') && !url.includes('/api/auth/refresh') && !url.includes('/api/auth/oauth/logout')) {
+        const renewed = await refreshOAuthSession();
+        if (renewed) {
+          if (init.headers instanceof Headers) {
+            init.headers.set('Authorization', 'Bearer ' + oauthAccessToken);
+            init.headers.set('X-JWT', oauthAccessToken);
+          } else if (!Array.isArray(init.headers)) {
+            init.headers['Authorization'] = 'Bearer ' + oauthAccessToken;
+            init.headers['X-JWT'] = oauthAccessToken;
+          }
+          return originalFetch(input, init);
+        }
+      }
+    }
+    return res;
+  };
+
   let ws = null;
   let wsReconnectTimer = null;
 
   // DOM Elements
   const el = {
+    // OAuth elements
+    oauthGateScreen: document.getElementById('oauth-gate-screen'),
+    oauthErrorBanner: document.getElementById('oauth-error-banner'),
+    btnOAuthGoogle: document.getElementById('btn-oauth-google'),
+    btnOAuthGithub: document.getElementById('btn-oauth-github'),
+    drawerOAuthCard: document.getElementById('drawer-oauth-card'),
+    drawerOAuthProvider: document.getElementById('drawer-oauth-provider'),
+    drawerOAuthUser: document.getElementById('drawer-oauth-user'),
+    btnOAuthLogout: document.getElementById('btn-oauth-logout'),
+
     // Auth elements
     authScreen: document.getElementById('auth-screen'),
     authTitle: document.getElementById('auth-title'),
@@ -80,6 +133,11 @@
     mediaHubModal: document.getElementById('mediahub-modal'),
     mediaHubBackdrop: document.getElementById('mediahub-backdrop'),
     btnCloseMediaHub: document.getElementById('btn-close-mediahub'),
+
+    btnDrawerQueue: document.getElementById('btn-drawer-queue'),
+    queueModal: document.getElementById('queue-modal'),
+    queueBackdrop: document.getElementById('queue-backdrop'),
+    btnCloseQueue: document.getElementById('btn-close-queue'),
 
     // Active Chat
     noChatState: document.getElementById('no-chat-state'),
@@ -503,8 +561,14 @@
 
   // WebSocket Connection
   function initWebSocket() {
+    if (oauthEnabled && !oauthAccessToken) {
+      console.log('[WS] Skipping WebSocket connection: waiting for OAuth authentication');
+      return;
+    }
+
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/ws`;
+    const tokenParam = oauthAccessToken ? `?token=${encodeURIComponent(oauthAccessToken)}` : '';
+    const wsUrl = `${protocol}//${window.location.host}/ws${tokenParam}`;
 
     if (ws) {
       try { ws.close(); } catch (e) {}
@@ -660,6 +724,10 @@
         handleUploadProgressWS(msg.payload);
         break;
 
+      case 'queue_task_update':
+        handleQueueTaskWS(msg.payload);
+        break;
+
       case 'indexer_progress':
         handleIndexerProgressWS(msg.payload);
         break;
@@ -735,8 +803,119 @@
     }
   }
 
+  // --- OAuth2 / JWT Stateless Session & Gate Logic ---
+  async function checkOAuthSession() {
+    try {
+      const cfgRes = await originalFetch('/api/auth/config');
+      if (cfgRes.ok) {
+        const cfg = await cfgRes.json();
+        oauthEnabled = !!cfg.auth_enabled;
+      }
+    } catch (e) {
+      console.warn('[OAuth] Failed to fetch auth config:', e);
+    }
+
+    if (!oauthEnabled) {
+      if (el.oauthGateScreen) el.oauthGateScreen.classList.add('hidden');
+      return true;
+    }
+
+    try {
+      const res = await originalFetch('/api/auth/session');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.authenticated && data.access_token) {
+          oauthAccessToken = data.access_token;
+          oauthUser = data.user;
+          scheduleOAuthRefresh(data.expires_in || 900);
+          updateOAuthUI();
+          if (el.oauthGateScreen) el.oauthGateScreen.classList.add('hidden');
+          return true;
+        }
+      }
+    } catch (e) {
+      console.error('[OAuth] Session check error:', e);
+    }
+
+    // Not authenticated: present OAuth Gate screen
+    if (el.oauthGateScreen) el.oauthGateScreen.classList.remove('hidden');
+    if (el.authScreen) el.authScreen.classList.add('hidden');
+    if (el.appContainer) el.appContainer.classList.add('hidden');
+    return false;
+  }
+
+  async function refreshOAuthSession() {
+    try {
+      const res = await originalFetch('/api/auth/refresh', { method: 'POST' });
+      if (res.ok) {
+        const data = await res.json();
+        oauthAccessToken = data.access_token;
+        if (data.user) oauthUser = data.user;
+        scheduleOAuthRefresh(data.expires_in || 900);
+        updateOAuthUI();
+        return true;
+      }
+    } catch (e) {
+      console.error('[OAuth] Failed to refresh token:', e);
+    }
+    return false;
+  }
+
+  function scheduleOAuthRefresh(ttlSeconds) {
+    clearTimeout(oauthRefreshTimer);
+    const delayMs = Math.max(30, (ttlSeconds - 120)) * 1000;
+    oauthRefreshTimer = setTimeout(refreshOAuthSession, delayMs);
+  }
+
+  function updateOAuthUI() {
+    if (!oauthEnabled || !oauthUser) {
+      if (el.drawerOAuthCard) el.drawerOAuthCard.classList.add('hidden');
+      return;
+    }
+    if (el.drawerOAuthCard) el.drawerOAuthCard.classList.remove('hidden');
+    if (el.drawerOAuthUser) el.drawerOAuthUser.textContent = oauthUser.name || oauthUser.id;
+    if (el.drawerOAuthProvider) {
+      const isGoogle = oauthUser.id && oauthUser.id.startsWith('google_');
+      el.drawerOAuthProvider.textContent = isGoogle ? 'Google' : 'GitHub';
+    }
+  }
+
+  function setupOAuthHandlers() {
+    if (el.btnOAuthGoogle) {
+      el.btnOAuthGoogle.addEventListener('click', () => {
+        window.location.href = '/auth/google/login?from=' + encodeURIComponent(window.location.pathname);
+      });
+    }
+
+    if (el.btnOAuthGithub) {
+      el.btnOAuthGithub.addEventListener('click', () => {
+        window.location.href = '/auth/github/login?from=' + encodeURIComponent(window.location.pathname);
+      });
+    }
+
+    if (el.btnOAuthLogout) {
+      el.btnOAuthLogout.addEventListener('click', async () => {
+        try {
+          await originalFetch('/api/auth/oauth/logout', { method: 'POST' });
+        } catch (e) {}
+        oauthAccessToken = null;
+        oauthUser = null;
+        clearTimeout(oauthRefreshTimer);
+        window.location.reload();
+      });
+    }
+  }
+
   // Authentication UI Flow
   function updateAuthUI() {
+    if (oauthEnabled && !oauthAccessToken) {
+      if (el.oauthGateScreen) el.oauthGateScreen.classList.remove('hidden');
+      el.authScreen.classList.add('hidden');
+      el.appContainer.classList.add('hidden');
+      return;
+    }
+    if (el.oauthGateScreen) el.oauthGateScreen.classList.add('hidden');
+
     if (!state.auth) return;
 
     if (state.auth.error) {
@@ -3028,6 +3207,20 @@
       el.mediaHubBackdrop.addEventListener('click', () => closePowerModal(el.mediaHubModal, el.mediaHubBackdrop));
     }
 
+    if (el.btnDrawerQueue) {
+      el.btnDrawerQueue.addEventListener('click', () => {
+        openPowerModal(el.queueModal, el.queueBackdrop);
+        loadQueueTasks();
+        loadQueueConfig();
+      });
+    }
+    if (el.btnCloseQueue) {
+      el.btnCloseQueue.addEventListener('click', () => closePowerModal(el.queueModal, el.queueBackdrop));
+    }
+    if (el.queueBackdrop) {
+      el.queueBackdrop.addEventListener('click', () => closePowerModal(el.queueModal, el.queueBackdrop));
+    }
+
     // 2. Setup Power Modal Tabs
     document.querySelectorAll('.power-modal').forEach((modal) => {
       const tabs = modal.querySelectorAll('.power-tab');
@@ -3056,6 +3249,9 @@
 
     // 6. Setup Media Hub Controller
     setupMediaHub();
+
+    // 7. Setup Scheduled Queue Manager Controller
+    setupQueueManager();
   }
 
   // --- Downloader Controller ---
@@ -3881,14 +4077,312 @@
     }
   }
 
+  // --- Scheduled Queue Manager Controller ---
+  function setupQueueManager() {
+    const btnRefresh = document.getElementById('btn-refresh-queue');
+    if (btnRefresh) {
+      btnRefresh.addEventListener('click', loadQueueTasks);
+    }
+
+    // Config form submit
+    const configForm = document.getElementById('queue-config-form');
+    if (configForm) {
+      configForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const btnSave = document.getElementById('btn-save-queue-cfg');
+        const spinner = document.getElementById('queue-cfg-spinner');
+        if (btnSave) btnSave.disabled = true;
+        if (spinner) spinner.classList.remove('hidden');
+
+        try {
+          const activeDays = [];
+          document.querySelectorAll('.cfg-day-cb:checked').forEach(cb => {
+            activeDays.push(parseInt(cb.value, 10));
+          });
+
+          const payload = {
+            schedule_enabled: document.getElementById('cfg-schedule-enabled').checked,
+            start_time: document.getElementById('cfg-start-time').value || '01:00',
+            end_time: document.getElementById('cfg-end-time').value || '07:00',
+            active_days: activeDays,
+            max_concurrent_tasks: parseInt(document.getElementById('cfg-max-concurrent').value, 10) || 3,
+            global_max_bytes_per_sec: (parseInt(document.getElementById('cfg-speed-limit').value, 10) || 0) * 1024,
+            on_queue_complete: document.getElementById('cfg-on-complete').value || 'none'
+          };
+
+          const res = await fetch('/api/queue/config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+          if (res.ok) {
+            showToast('Queue schedule settings updated successfully');
+            loadQueueConfig();
+          } else {
+            showToast('Failed to save settings');
+          }
+        } catch (err) {
+          showToast('Error saving config: ' + err.message);
+        } finally {
+          if (btnSave) btnSave.disabled = false;
+          if (spinner) spinner.classList.add('hidden');
+        }
+      });
+    }
+
+    // Add task form submit
+    const addForm = document.getElementById('queue-add-form');
+    if (addForm) {
+      addForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const btnAdd = document.getElementById('btn-submit-queue-add');
+        const spinner = document.getElementById('queue-add-spinner');
+        if (btnAdd) btnAdd.disabled = true;
+        if (spinner) spinner.classList.remove('hidden');
+
+        try {
+          const taskType = document.getElementById('q-add-type').value;
+          const chatId = parseInt(document.getElementById('q-add-chat-id').value, 10) || 0;
+          const msgId = parseInt(document.getElementById('q-add-msg-id').value, 10) || 0;
+          const fileName = document.getElementById('q-add-filename').value.trim() || 'Task_' + Date.now();
+          const filePath = document.getElementById('q-add-path').value.trim();
+          const priority = parseInt(document.getElementById('q-add-priority').value, 10) || 2;
+          const postAction = document.getElementById('q-add-post-action').value || 'none';
+
+          const res = await fetch('/api/queue/add', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              type: taskType,
+              peer_id: chatId,
+              message_id: msgId,
+              file_name: fileName,
+              file_path: filePath,
+              priority: priority,
+              post_action: postAction
+            })
+          });
+
+          if (res.ok) {
+            showToast(`Task "${fileName}" added to queue`);
+            addForm.reset();
+            const tasksTab = document.querySelector('.power-tab[data-tab="queue-tasks-tab"]');
+            if (tasksTab) tasksTab.click();
+            loadQueueTasks();
+          } else {
+            const data = await res.json().catch(() => ({}));
+            showToast(data.error || 'Failed to add task');
+          }
+        } catch (err) {
+          showToast('Add task error: ' + err.message);
+        } finally {
+          if (btnAdd) btnAdd.disabled = false;
+          if (spinner) spinner.classList.add('hidden');
+        }
+      });
+    }
+  }
+
+  async function loadQueueConfig() {
+    try {
+      const res = await fetch('/api/queue/config');
+      if (!res.ok) return;
+      const cfg = await res.json();
+
+      const cbSchedule = document.getElementById('cfg-schedule-enabled');
+      if (cbSchedule) cbSchedule.checked = !!cfg.schedule_enabled;
+      if (document.getElementById('cfg-start-time')) document.getElementById('cfg-start-time').value = cfg.start_time || '01:00';
+      if (document.getElementById('cfg-end-time')) document.getElementById('cfg-end-time').value = cfg.end_time || '07:00';
+      if (document.getElementById('cfg-max-concurrent')) document.getElementById('cfg-max-concurrent').value = cfg.max_concurrent_tasks || 3;
+      if (document.getElementById('cfg-speed-limit')) document.getElementById('cfg-speed-limit').value = cfg.global_max_bytes_per_sec ? Math.round(cfg.global_max_bytes_per_sec / 1024) : 0;
+      if (document.getElementById('cfg-on-complete')) document.getElementById('cfg-on-complete').value = cfg.on_queue_complete || 'none';
+
+      const activeBadge = document.getElementById('queue-active-badge');
+      if (activeBadge) {
+        if (cfg.schedule_enabled) {
+          activeBadge.className = 'badge badge-connecting';
+          activeBadge.textContent = `Scheduled (${cfg.start_time} - ${cfg.end_time})`;
+        } else {
+          activeBadge.className = 'badge badge-connected';
+          activeBadge.textContent = 'Direct Mode';
+        }
+      }
+
+      if (cfg.active_days && Array.isArray(cfg.active_days)) {
+        const daysSet = new Set(cfg.active_days);
+        document.querySelectorAll('.cfg-day-cb').forEach(cb => {
+          cb.checked = daysSet.has(parseInt(cb.value, 10));
+        });
+      }
+    } catch (e) {
+      console.error('Failed to load queue config:', e);
+    }
+  }
+
+  async function loadQueueTasks() {
+    const listEl = document.getElementById('queue-task-list');
+    if (!listEl) return;
+
+    try {
+      const res = await fetch('/api/queue/tasks');
+      if (!res.ok) return;
+      const data = await res.json();
+      const tasks = data.tasks || [];
+
+      const countBadge = document.getElementById('queue-count-badge');
+      if (countBadge) countBadge.textContent = tasks.length.toString();
+
+      let pendingCount = 0;
+      let runningCount = 0;
+      tasks.forEach(t => {
+        if (t.status === 'pending' || t.status === 'scheduled') pendingCount++;
+        if (t.status === 'running') runningCount++;
+      });
+
+      const summaryEl = document.getElementById('queue-stats-summary');
+      if (summaryEl) {
+        summaryEl.textContent = `${pendingCount} pending • ${runningCount} active • ${tasks.length} total`;
+      }
+
+      if (tasks.length === 0) {
+        listEl.innerHTML = '<div class="power-empty-state">No tasks in queue. Click "Add Task" to queue downloads or uploads.</div>';
+        return;
+      }
+
+      listEl.innerHTML = '';
+      tasks.forEach(task => {
+        const card = createQueueTaskCard(task);
+        listEl.appendChild(card);
+      });
+    } catch (e) {
+      console.error('Failed to load queue tasks:', e);
+    }
+  }
+
+  function createQueueTaskCard(task) {
+    const div = document.createElement('div');
+    div.className = 'power-task-card';
+    div.id = `q-task-card-${task.id}`;
+
+    const percent = Math.round(task.progress_percent || 0);
+    const speed = task.speed_bytes_per_sec ? formatSpeed(task.speed_bytes_per_sec) : '';
+    const transferred = formatBytes(task.transferred_bytes || 0);
+    const total = formatBytes(task.total_bytes || 0);
+
+    let badgeClass = 'badge-connecting';
+    if (task.status === 'completed') badgeClass = 'badge-connected';
+    if (task.status === 'failed') badgeClass = 'badge-error';
+    if (task.status === 'paused') badgeClass = 'badge-oauth';
+
+    const priorityLabel = task.priority === 3 ? '⚡ High' : (task.priority === 1 ? 'Low' : 'Normal');
+
+    div.innerHTML = `
+      <div class="power-task-title-row">
+        <span class="power-task-title" title="${escapeHTML(task.file_name)}">
+          <span class="feature-tag">${task.type.toUpperCase()}</span>
+          ${escapeHTML(task.file_name)}
+        </span>
+        <span class="badge ${badgeClass}" id="q-status-${task.id}">${task.status.toUpperCase()}</span>
+      </div>
+      <div class="power-task-meta-row" style="margin-top:6px; font-size:12px; color:var(--text-secondary); display:flex; justify-content:space-between;">
+        <span>Priority: ${priorityLabel} • Post: ${task.post_action}</span>
+        <span id="q-stats-${task.id}">${transferred} / ${total} ${speed ? '• ' + speed : ''}</span>
+      </div>
+      <div class="power-progress-bar-wrap" style="margin-top:8px;">
+        <div class="power-progress-bar" id="q-bar-${task.id}" style="width:${percent}%;"></div>
+      </div>
+      <div class="power-task-actions-row" style="margin-top:10px; display:flex; gap:8px; justify-content:flex-end;">
+        ${task.status === 'running' || task.status === 'pending' ? `
+          <button type="button" class="btn btn-secondary btn-sm q-action-pause" data-id="${task.id}">Pause</button>
+        ` : ''}
+        ${task.status === 'paused' ? `
+          <button type="button" class="btn btn-secondary btn-sm q-action-resume" data-id="${task.id}">Resume</button>
+        ` : ''}
+        <button type="button" class="btn btn-text text-danger btn-sm q-action-delete" data-id="${task.id}">Remove</button>
+      </div>
+    `;
+
+    // Action listeners
+    const pauseBtn = div.querySelector('.q-action-pause');
+    if (pauseBtn) {
+      pauseBtn.addEventListener('click', async () => {
+        sendWS('queue_pause', { id: task.id });
+        await fetch('/api/queue/pause', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: task.id })
+        });
+        loadQueueTasks();
+      });
+    }
+
+    const resumeBtn = div.querySelector('.q-action-resume');
+    if (resumeBtn) {
+      resumeBtn.addEventListener('click', async () => {
+        sendWS('queue_resume', { id: task.id });
+        await fetch('/api/queue/resume', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: task.id })
+        });
+        loadQueueTasks();
+      });
+    }
+
+    const delBtn = div.querySelector('.q-action-delete');
+    if (delBtn) {
+      delBtn.addEventListener('click', async () => {
+        sendWS('queue_delete', { id: task.id });
+        await fetch('/api/queue/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: task.id })
+        });
+        div.remove();
+        loadQueueTasks();
+      });
+    }
+
+    return div;
+  }
+
+  function handleQueueTaskWS(task) {
+    if (!task || !task.id) return;
+    const bar = document.getElementById(`q-bar-${task.id}`);
+    const stats = document.getElementById(`q-stats-${task.id}`);
+    const statusBadge = document.getElementById(`q-status-${task.id}`);
+
+    if (bar) {
+      const percent = Math.round(task.progress_percent || 0);
+      bar.style.width = `${percent}%`;
+    }
+    if (stats) {
+      const speed = task.speed_bytes_per_sec ? formatSpeed(task.speed_bytes_per_sec) : '';
+      stats.textContent = `${formatBytes(task.transferred_bytes)} / ${formatBytes(task.total_bytes)} ${speed ? '• ' + speed : ''}`;
+    }
+    if (statusBadge) {
+      statusBadge.textContent = task.status.toUpperCase();
+      if (task.status === 'completed') {
+        statusBadge.className = 'badge badge-connected';
+      }
+    }
+  }
+
   // Initialize
-  function init() {
+  async function init() {
     const savedTheme = localStorage.getItem('tg_theme') || 'dark';
     document.documentElement.setAttribute('data-theme', savedTheme);
     el.themeText.textContent = savedTheme === 'dark' ? 'Night Mode' : 'Day Mode';
 
     setupEventListeners();
-    initWebSocket();
+    setupOAuthHandlers();
+
+    // Check OAuth stateless session: if OAuth is enabled and active session exists in HttpOnly cookie,
+    // issues access token into memory and automatically proceeds to Telegram Web.
+    const authorized = await checkOAuthSession();
+    if (authorized) {
+      initWebSocket();
+    }
   }
 
   window.addEventListener('DOMContentLoaded', init);

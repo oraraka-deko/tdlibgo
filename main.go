@@ -14,10 +14,13 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
+	"go.etcd.io/bbolt"
 
+	"tdlibgo/internal/auth"
 	"tdlibgo/internal/logger"
 	"tdlibgo/internal/models"
 	"tdlibgo/internal/server"
+	"tdlibgo/internal/services"
 	"tdlibgo/internal/state"
 	"tdlibgo/internal/storage"
 	"tdlibgo/internal/telegram"
@@ -50,11 +53,34 @@ func main() {
 		phone = "+12294660989"
 	}
 
-	port := 8080
+	port := 22816
 	if pStr := os.Getenv("PORT"); pStr != "" {
 		if p, err := strconv.Atoi(pStr); err == nil && p > 0 {
 			port = p
 		}
+	}
+
+	authEnabled := strings.EqualFold(os.Getenv("AUTH_ENABLED"), "true") || os.Getenv("AUTH_ENABLED") == "1"
+	authURL := os.Getenv("AUTH_URL")
+	if authURL == "" {
+		authURL = fmt.Sprintf("http://localhost:%d", port)
+	}
+
+	oauthCfg := auth.Config{
+		Enabled:            authEnabled,
+		URL:                authURL,
+		Secret:             os.Getenv("AUTH_SECRET"),
+		GoogleClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
+		GoogleClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
+		GoogleRedirectURL:  os.Getenv("GOOGLE_REDIRECT_URL"),
+		GithubClientID:     os.Getenv("GITHUB_CLIENT_ID"),
+		GithubClientSecret: os.Getenv("GITHUB_CLIENT_SECRET"),
+		GithubRedirectURL:  os.Getenv("GITHUB_REDIRECT_URL"),
+	}
+
+	oauthMgr, err := auth.NewOAuthManager(oauthCfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to initialize OAuth manager: %v\n", err)
 	}
 
 	fmt.Println("==================================================================")
@@ -63,6 +89,11 @@ func main() {
 	fmt.Printf("Phone:    %s\n", phone)
 	fmt.Printf("App ID:   %d\n", appID)
 	fmt.Printf("Web UI:   http://localhost:%d\n", port)
+	if authEnabled {
+		fmt.Printf("OAuth:    Enabled (Google / GitHub) [Stateless JWT Sessions]\n")
+	} else {
+		fmt.Printf("OAuth:    Optional / Disabled (Direct Access)\n")
+	}
 	fmt.Println("==================================================================")
 
 	cleanPhone := strings.ReplaceAll(strings.ReplaceAll(phone, "+", ""), " ", "")
@@ -92,8 +123,25 @@ func main() {
 	// Initialize MTProto Client Controller
 	clientCtrl := telegram.NewClientController(appID, appHash, phone, stateMgr)
 
-	// Initialize HTTP and WebSocket Server with embedded web assets
-	srv := server.NewServer(port, stateMgr, clientCtrl, webFiles)
+	// Initialize Persistent Queue Manager (bbolt)
+	queueDBPath := filepath.Join(sessionDir, "queue.db")
+	queueDB, err := bbolt.Open(queueDBPath, 0600, nil)
+	var queueMgr *services.QueueManager
+	if err != nil {
+		logger.Error("QUEUE", "Failed to open queue database at %s: %v", queueDBPath, err)
+	} else {
+		defer queueDB.Close()
+		qm, qErr := services.NewQueueManager(queueDB, nil)
+		if qErr != nil {
+			logger.Error("QUEUE", "Failed to initialize QueueManager: %v", qErr)
+		} else {
+			queueMgr = qm
+			defer queueMgr.Close()
+		}
+	}
+
+	// Initialize HTTP and WebSocket Server with embedded web assets, OAuth manager, and Queue manager
+	srv := server.NewServer(port, stateMgr, clientCtrl, webFiles, oauthMgr, queueMgr)
 
 	// Interactive terminal console reader
 	go func() {
