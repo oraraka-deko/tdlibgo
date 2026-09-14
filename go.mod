@@ -16,7 +16,6 @@ require (
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 )
 
-replace github.com/iyear/tdl/core => ./tdl/core
 
 require (
 	github.com/DataDog/zstd v1.4.5 // indirect
